@@ -1,0 +1,67 @@
+{
+  "schema_version": 1,
+  "engine": {
+    "tool": "k6",
+    "version": "k6 v2.4.0 (commit/dd9395906d, go1.26.11, darwin/arm64)",
+    "latency_definition": "http_req_duration: sending+waiting+receiving; excludes initial connection/DNS",
+    "elapsed_definition": "first VU start to last request end; Date.now millisecond resolution",
+    "percentile_method": "k6 trend interpolation; not SPE nearest-rank"
+  },
+  "workload": {
+    "url": "http://127.0.0.1:8081/owners/1",
+    "requests": 10000,
+    "concurrency": 4,
+    "timeout_ms": 2000,
+    "method": "GET",
+    "http_version": "1.1",
+    "model": "closed_loop",
+    "redirects": false,
+    "proxy": false,
+    "connection_reuse": true,
+    "success_policy": "complete_2xx",
+    "body_retention": "discard",
+    "body_size_limit": "not implemented by reference adapter"
+  },
+  "counts": {
+    "requested": 10000,
+    "started": 10000,
+    "completed": 10000,
+    "successes": 10000,
+    "http_errors": 0,
+    "timeouts": 0,
+    "connection_errors": 0,
+    "network_errors": 0,
+    "response_limit_errors": 0,
+    "cancelled": 0,
+    "not_started": 0
+  },
+  "elapsed_seconds": 3.195,
+  "successful_throughput_rps": 3129.8904538341158,
+  "completed_throughput_rps": 3129.8904538341158,
+  "peak_in_flight": 4,
+  "peak_in_flight_definition": "configured VUs upper bound; not independently observed",
+  "interrupted": false,
+  "engine_error": null,
+  "http_status_counts": {
+    "200": 10000
+  },
+  "success_latency_ms": {
+    "samples": 10000,
+    "min": 0.81,
+    "mean": 1.2264891000000038,
+    "p50": 1.007,
+    "p95": 2.233,
+    "p99": 4.149409999999996,
+    "max": 10.117
+  },
+  "completed_latency_ms": {
+    "samples": 10000,
+    "min": 0.81,
+    "mean": 1.2264891000000038,
+    "p50": 1.007,
+    "p95": 2.233,
+    "p99": 4.149409999999996,
+    "max": 10.117
+  },
+  "wrong_protocol": 0
+}

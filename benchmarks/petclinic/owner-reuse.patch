@@ -1,0 +1,59 @@
+diff --git a/src/main/java/org/springframework/samples/petclinic/owner/OwnerController.java b/src/main/java/org/springframework/samples/petclinic/owner/OwnerController.java
+index e5edf5b..846fbc1 100644
+--- a/src/main/java/org/springframework/samples/petclinic/owner/OwnerController.java
++++ b/src/main/java/org/springframework/samples/petclinic/owner/OwnerController.java
+@@ -17,7 +17,6 @@ package org.springframework.samples.petclinic.owner;
+ 
+ import java.util.List;
+ import java.util.Objects;
+-import java.util.Optional;
+ 
+ import org.springframework.data.domain.Page;
+ import org.springframework.data.domain.PageRequest;
+@@ -172,17 +171,12 @@ class OwnerController {
+ 
+ 	/**
+ 	 * Custom handler for displaying an owner.
+-	 * @param ownerId the ID of the owner to display
+-	 * @return a ModelMap with the model attributes for the view
++	 * @param owner the owner already loaded into the model
++	 * @return the model and view for the owner details
+ 	 */
+ 	@GetMapping("/owners/{ownerId}")
+-	public ModelAndView showOwner(@PathVariable("ownerId") int ownerId) {
+-		ModelAndView mav = new ModelAndView("owners/ownerDetails");
+-		Optional<Owner> optionalOwner = this.owners.findById(ownerId);
+-		Owner owner = optionalOwner.orElseThrow(() -> new IllegalArgumentException(
+-				"Owner not found with id: " + ownerId + ". Please ensure the ID is correct "));
+-		mav.addObject(owner);
+-		return mav;
++	public ModelAndView showOwner(@ModelAttribute(value = "owner", binding = false) Owner owner) {
++		return new ModelAndView("owners/ownerDetails", "owner", owner);
+ 	}
+ 
+ }
+diff --git a/src/test/java/org/springframework/samples/petclinic/owner/OwnerControllerTests.java b/src/test/java/org/springframework/samples/petclinic/owner/OwnerControllerTests.java
+index c8ce4f5..eebcb76 100644
+--- a/src/test/java/org/springframework/samples/petclinic/owner/OwnerControllerTests.java
++++ b/src/test/java/org/springframework/samples/petclinic/owner/OwnerControllerTests.java
+@@ -293,6 +293,20 @@ class OwnerControllerTests {
+ 			.andExpect(model().attribute("owner",
+ 					hasProperty("pets", hasItem(hasProperty("visits", hasSize(greaterThan(0)))))))
+ 			.andExpect(view().name("owners/ownerDetails"));
++
++		verify(this.owners).findById(TEST_OWNER_ID);
++	}
++
++	@Test
++	void showOwnerDoesNotBindRequestParameters() throws Exception {
++		mockMvc
++			.perform(get("/owners/{ownerId}", TEST_OWNER_ID).param("firstName", "Changed").param("lastName", "Changed"))
++			.andExpect(status().isOk())
++			.andExpect(model().attribute("owner", hasProperty("firstName", is("George"))))
++			.andExpect(model().attribute("owner", hasProperty("lastName", is("Franklin"))))
++			.andExpect(view().name("owners/ownerDetails"));
++
++		verify(this.owners).findById(TEST_OWNER_ID);
+ 	}
+ 
+ 	@Test

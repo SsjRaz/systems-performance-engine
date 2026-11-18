@@ -1,0 +1,14 @@
+Spring Petclinic validation target
+
+Upstream: https://github.com/spring-projects/spring-petclinic
+Revision: 500158f732419217507c7656904b8e6aa1bcc0d6
+Copyright 2012-2025 the original author or authors.
+
+The patches in this directory modify the Apache-2.0-licensed Spring Petclinic
+application. owner-reuse.patch reuses an owner already loaded by the controller
+and adds regression tests. measurement-controls.patch adds an opt-in bounded
+delay/CPU interceptor and an actual-HTTP test. Existing source notices are
+preserved. PETCLINIC-LICENSE.txt is the upstream application's license.
+
+These notices and license apply to the Petclinic-derived material only. They do
+not select a license for Systems Performance Engine.

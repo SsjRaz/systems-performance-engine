@@ -1,0 +1,9 @@
+{
+  "repository": "https://github.com/spring-projects/spring-petclinic.git",
+  "revision": "500158f732419217507c7656904b8e6aa1bcc0d6",
+  "java_major": 21,
+  "patches": {
+    "measurement-controls.patch": "7b903ad9702ad49e9d66b043159f2a145975dac826907a87c4e4cbb51c6b4eca",
+    "owner-reuse.patch": "b2445ca72d2b4cc3a22bafa3f502f1ac984290fb3a4b74cfb29abae43cad5900"
+  }
+}

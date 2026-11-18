@@ -1,0 +1,191 @@
+diff --git a/src/main/java/org/springframework/samples/petclinic/owner/MeasurementValidationController.java b/src/main/java/org/springframework/samples/petclinic/owner/MeasurementValidationController.java
+new file mode 100644
+index 0000000..e95cf75
+--- /dev/null
++++ b/src/main/java/org/springframework/samples/petclinic/owner/MeasurementValidationController.java
+@@ -0,0 +1,107 @@
++/*
++ * Copyright 2012-2025 the original author or authors.
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      https://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++package org.springframework.samples.petclinic.owner;
++
++import java.util.Map;
++import java.util.concurrent.atomic.AtomicLong;
++
++import jakarta.servlet.http.HttpServletRequest;
++import jakarta.servlet.http.HttpServletResponse;
++
++import org.springframework.context.annotation.Profile;
++import org.springframework.http.HttpStatus;
++import org.springframework.web.bind.annotation.GetMapping;
++import org.springframework.web.bind.annotation.PostMapping;
++import org.springframework.web.bind.annotation.RequestBody;
++import org.springframework.web.bind.annotation.RequestMapping;
++import org.springframework.web.bind.annotation.RestController;
++import org.springframework.web.server.ResponseStatusException;
++import org.springframework.web.servlet.HandlerInterceptor;
++import org.springframework.web.servlet.config.annotation.InterceptorRegistry;
++import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
++
++/**
++ * Local validation controls; inactive unless the measurement-validation profile is
++ * enabled.
++ */
++@RestController
++@Profile("measurement-validation")
++@RequestMapping("/validation")
++public class MeasurementValidationController implements WebMvcConfigurer {
++
++	private record Work(long delayNanos, long cpuIterations) {
++	}
++
++	private volatile Work work = new Work(0, 0);
++
++	private final AtomicLong requests = new AtomicLong();
++
++	private final AtomicLong delayCalls = new AtomicLong();
++
++	private final AtomicLong cpuCalls = new AtomicLong();
++
++	private final AtomicLong iterationsExecuted = new AtomicLong();
++
++	private volatile long checksum;
++
++	@Override
++	public void addInterceptors(InterceptorRegistry registry) {
++		registry.addInterceptor(new HandlerInterceptor() {
++			@Override
++			public boolean preHandle(HttpServletRequest request, HttpServletResponse response, Object handler)
++					throws InterruptedException {
++				Work current = work;
++				long sequence = requests.incrementAndGet();
++				if (current.delayNanos() > 0) {
++					delayCalls.incrementAndGet();
++					Thread.sleep(current.delayNanos() / 1_000_000, (int) (current.delayNanos() % 1_000_000));
++				}
++				if (current.cpuIterations() > 0) {
++					long value = sequence ^ 0x9e3779b97f4a7c15L;
++					for (long i = 0; i < current.cpuIterations(); i++) {
++						value = Long.rotateLeft(value ^ i, 13) * 0x9e3779b97f4a7c15L;
++					}
++					checksum = value;
++					cpuCalls.incrementAndGet();
++					iterationsExecuted.addAndGet(current.cpuIterations());
++				}
++				response.setHeader("X-Validation-Delay-Nanos", Long.toString(current.delayNanos()));
++				response.setHeader("X-Validation-CPU-Iterations", Long.toString(current.cpuIterations()));
++				return true;
++			}
++		}).addPathPatterns("/owners/1");
++	}
++
++	@PostMapping("/config")
++	public Map<String, Object> configure(@RequestBody Map<String, Long> configuration) {
++		long delay = configuration.getOrDefault("delay_nanos", 0L);
++		long iterations = configuration.getOrDefault("cpu_iterations", 0L);
++		if (delay < 0 || delay > 20_000_000 || iterations < 0 || iterations > 1_000_000) {
++			throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Validation workload exceeds bounded limits");
++		}
++		work = new Work(delay, iterations);
++		return stats();
++	}
++
++	@GetMapping("/stats")
++	public Map<String, Object> stats() {
++		Work current = work;
++		return Map.of("requests", requests.get(), "delayCalls", delayCalls.get(), "cpuCalls", cpuCalls.get(),
++				"cpuIterationsExecuted", iterationsExecuted.get(), "checksum", checksum, "delay_nanos",
++				current.delayNanos(), "cpu_iterations", current.cpuIterations());
++	}
++
++}
+diff --git a/src/test/java/org/springframework/samples/petclinic/owner/MeasurementValidationTests.java b/src/test/java/org/springframework/samples/petclinic/owner/MeasurementValidationTests.java
+new file mode 100644
+index 0000000..d123b0a
+--- /dev/null
++++ b/src/test/java/org/springframework/samples/petclinic/owner/MeasurementValidationTests.java
+@@ -0,0 +1,72 @@
++/*
++ * Copyright 2012-2025 the original author or authors.
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      https://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++package org.springframework.samples.petclinic.owner;
++
++import static org.assertj.core.api.Assertions.assertThat;
++
++import java.net.URI;
++import java.net.http.HttpClient;
++import java.net.http.HttpRequest;
++import java.net.http.HttpResponse;
++import java.time.Duration;
++
++import org.junit.jupiter.api.Test;
++import org.springframework.boot.test.context.SpringBootTest;
++import org.springframework.boot.test.web.server.LocalServerPort;
++import org.springframework.test.context.ActiveProfiles;
++
++@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
++		properties = "spring.docker.compose.enabled=false")
++@ActiveProfiles("measurement-validation")
++class MeasurementValidationTests {
++
++	@LocalServerPort
++	int port;
++
++	@Test
++	void executesRealWorkWithoutChangingOwnerPage() throws Exception {
++		HttpClient client = HttpClient.newHttpClient();
++		String base = "http://127.0.0.1:" + port;
++		HttpResponse<String> before = client.send(HttpRequest.newBuilder(URI.create(base + "/owners/1")).build(),
++				HttpResponse.BodyHandlers.ofString());
++		assertThat(before.statusCode()).isEqualTo(200);
++		assertThat(before.body()).contains("George", "Franklin", "Leo");
++		HttpRequest config = HttpRequest.newBuilder(URI.create(base + "/validation/config"))
++			.header("Content-Type", "application/json")
++			.POST(HttpRequest.BodyPublishers.ofString("{\"delay_nanos\":1000000,\"cpu_iterations\":10000}"))
++			.build();
++		assertThat(client.send(config, HttpResponse.BodyHandlers.ofString()).statusCode()).isEqualTo(200);
++		long start = System.nanoTime();
++		HttpResponse<String> after = client.send(
++				HttpRequest.newBuilder(URI.create(base + "/owners/1")).timeout(Duration.ofSeconds(5)).build(),
++				HttpResponse.BodyHandlers.ofString());
++		assertThat(System.nanoTime() - start).isGreaterThanOrEqualTo(1_000_000);
++		assertThat(after.body()).isEqualTo(before.body());
++		assertThat(after.headers().firstValue("X-Validation-CPU-Iterations")).contains("10000");
++		String stats = client
++			.send(HttpRequest.newBuilder(URI.create(base + "/validation/stats")).build(),
++					HttpResponse.BodyHandlers.ofString())
++			.body();
++		assertThat(stats).contains("\"requests\":2", "\"cpuCalls\":1", "\"delayCalls\":1",
++				"\"cpuIterationsExecuted\":10000");
++		HttpRequest invalid = HttpRequest.newBuilder(URI.create(base + "/validation/config"))
++			.header("Content-Type", "application/json")
++			.POST(HttpRequest.BodyPublishers.ofString("{\"cpu_iterations\":1000001}"))
++			.build();
++		assertThat(client.send(invalid, HttpResponse.BodyHandlers.ofString()).statusCode()).isEqualTo(400);
++	}
++
++}

@@ -1,0 +1,17 @@
+{
+  "schema_version":1,
+  "engine":{"version":"0.1.0","source_revision":"6093237+dirty","compiler":"AppleClang 16.0.0.16000026","build_type":"Release","build_flags":" -O3 -DNDEBUG -std=c++20 -Wall -Wextra -Wpedantic -Wconversion -Wshadow","sanitizers":"OFF","platform":"Darwin arm64","libcurl":"libcurl/8.7.1 (SecureTransport) LibreSSL/3.3.6 zlib/1.2.12 nghttp2/1.66.0"},
+  "started_at_utc":"2026-11-15T04:12:13Z",
+  "workload":{"url":"http://127.0.0.1:8081/owners/1","method":"GET","http_version":"1.1","model":"closed_loop","redirects":false,"proxy":false,"connection_reuse":true,"warmup_requests":0,"application_retries":0,"success_policy":"complete_2xx","requests":10000,"concurrency":4,"timeout_ms":2000,"max_body_bytes":16777216},
+  "counts":{"requested":10000,"started":10000,"completed":10000,"successes":10000,"http_errors":0,"connection_errors":0,"network_errors":0,"timeouts":0,"response_limit_errors":0,"cancelled":0,"not_started":0},
+  "http_status_counts":{"200":10000},
+  "transport_error_counts":{},
+  "elapsed_seconds":21.150600209,
+  "completed_throughput_rps":472.79982133768488,
+  "successful_throughput_rps":472.79982133768488,
+  "peak_in_flight":4,
+  "interrupted":false,
+  "engine_error":null,
+  "success_latency_ms":{"samples":10000,"min":5.9720420000000001,"mean":8.4577832764000078,"p50":8.3297089999999994,"p95":9.9111659999999997,"p99":11.545875000000001,"max":44.455458},
+  "completed_latency_ms":{"samples":10000,"min":5.9720420000000001,"mean":8.4577832764000078,"p50":8.3297089999999994,"p95":9.9111659999999997,"p99":11.545875000000001,"max":44.455458}
+}

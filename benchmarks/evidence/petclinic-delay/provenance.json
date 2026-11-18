@@ -1,0 +1,125 @@
+{
+  "scope": "Historical controlled local experiment excerpts; not representative benchmarks or a complete comparison",
+  "selection": "First measured run from the first baseline and first candidate JVM block in the delay experiment for each tool. No ranking/filtering by performance.",
+  "study_date_utc": "2026-11-15",
+  "sources": [
+    {
+      "scope": "controlled local A-B-B-A experiment; descriptive results only",
+      "started_at_utc": "2026-11-15T04:11:07.070415+00:00",
+      "finished_at_utc": "2026-11-15T04:14:42.284910+00:00",
+      "protocol": {
+        "order": [
+          "baseline",
+          "candidate",
+          "candidate",
+          "baseline"
+        ],
+        "warmup_requests": 50000,
+        "measured_requests": 10000,
+        "measured_runs_per_block": 2,
+        "concurrency": 4,
+        "timeout_ms": 2000,
+        "heap_mb": 512,
+        "rest_between_blocks_seconds": 5,
+        "tool": "spe",
+        "scenario": "delay",
+        "same_artifact": null,
+        "diagnostics": false,
+        "conditioning_requests": 2000,
+        "variant_settings": {
+          "baseline": [
+            0,
+            0
+          ],
+          "candidate": [
+            5000000,
+            0
+          ]
+        }
+      },
+      "jar_sha256": {
+        "baseline": "006f6db0540acea7a944b98cee1c05aece33878d65663ab05cf3d5bc994ac531",
+        "candidate": "006f6db0540acea7a944b98cee1c05aece33878d65663ab05cf3d5bc994ac531"
+      },
+      "engine_sha256": "591e1ad52c9537b15ca297b36814834719c85f471cb90b37c60ad46cb3967540",
+      "java_version": "openjdk version \"21.0.7\" 2025-04-15 LTS\nOpenJDK Runtime Environment Temurin-21.0.7+6 (build 21.0.7+6-LTS)\nOpenJDK 64-Bit Server VM Temurin-21.0.7+6 (build 21.0.7+6-LTS, mixed mode, sharing)\n",
+      "platform": "macOS-26.0.1-arm64-arm-64bit-Mach-O",
+      "logical_cpus": 8,
+      "runner_sha256": "505f5e0494f8e4e9ff9d4e2d87f45e78025c0e46f8cf3149f1ea0f692131b3eb",
+      "archive": "petclinic-abba-20261115T041106Z-dqyn4ra8",
+      "manifest_sha256": "61499a3c4bad891c2b4b2b444c1b76b317a8c5fde4c0a9a190be404826de4d29"
+    },
+    {
+      "scope": "controlled local A-B-B-A experiment; descriptive results only",
+      "started_at_utc": "2026-11-15T04:14:42.831379+00:00",
+      "finished_at_utc": "2026-11-15T04:18:16.142073+00:00",
+      "protocol": {
+        "order": [
+          "baseline",
+          "candidate",
+          "candidate",
+          "baseline"
+        ],
+        "warmup_requests": 50000,
+        "measured_requests": 10000,
+        "measured_runs_per_block": 2,
+        "concurrency": 4,
+        "timeout_ms": 2000,
+        "heap_mb": 512,
+        "rest_between_blocks_seconds": 5,
+        "tool": "k6",
+        "scenario": "delay",
+        "same_artifact": null,
+        "diagnostics": false,
+        "conditioning_requests": 2000,
+        "variant_settings": {
+          "baseline": [
+            0,
+            0
+          ],
+          "candidate": [
+            5000000,
+            0
+          ]
+        }
+      },
+      "jar_sha256": {
+        "baseline": "006f6db0540acea7a944b98cee1c05aece33878d65663ab05cf3d5bc994ac531",
+        "candidate": "006f6db0540acea7a944b98cee1c05aece33878d65663ab05cf3d5bc994ac531"
+      },
+      "engine_sha256": "4ba3769157ac5ef1fdb303fd9e11010458eb742da53d5a4d3d70e0ee709306ee",
+      "java_version": "openjdk version \"21.0.7\" 2025-04-15 LTS\nOpenJDK Runtime Environment Temurin-21.0.7+6 (build 21.0.7+6-LTS)\nOpenJDK 64-Bit Server VM Temurin-21.0.7+6 (build 21.0.7+6-LTS, mixed mode, sharing)\n",
+      "platform": "macOS-26.0.1-arm64-arm-64bit-Mach-O",
+      "logical_cpus": 8,
+      "runner_sha256": "505f5e0494f8e4e9ff9d4e2d87f45e78025c0e46f8cf3149f1ea0f692131b3eb",
+      "archive": "petclinic-abba-20261115T041442Z-lmfb7ewe",
+      "manifest_sha256": "5452ab3d4bee387e240f02d3a948105e5e6570ef1f1ca4311c279419c27905d7"
+    }
+  ],
+  "files": {
+    "spe-baseline.json": {
+      "source_archive": "petclinic-abba-20261115T041106Z-dqyn4ra8",
+      "source_relative_path": "01-baseline/run-01.json",
+      "sha256": "d3b13373828e11b1b1d570fd24a4d0fa7aa96da671fd7f3d8c62bad5ca7fa5ae",
+      "content_changes": "none"
+    },
+    "spe-candidate.json": {
+      "source_archive": "petclinic-abba-20261115T041106Z-dqyn4ra8",
+      "source_relative_path": "02-candidate/run-01.json",
+      "sha256": "0f04498dea1c93ac7fc1a2ad2f75369dd51f4ff4540c72e865b2d8bc8c3bece6",
+      "content_changes": "none"
+    },
+    "k6-baseline.json": {
+      "source_archive": "petclinic-abba-20261115T041442Z-lmfb7ewe",
+      "source_relative_path": "01-baseline/run-01.json",
+      "sha256": "09889b053dbf860c5636c9c932a71155862ceacb8cf960cc63a3dd864d753fc2",
+      "content_changes": "none"
+    },
+    "k6-candidate.json": {
+      "source_archive": "petclinic-abba-20261115T041442Z-lmfb7ewe",
+      "source_relative_path": "02-candidate/run-01.json",
+      "sha256": "f648a6697dd397bf83977b9ff2aa373e534f80fc1ee0d85cebe42f299a1a6f0c",
+      "content_changes": "none"
+    }
+  }
+}
