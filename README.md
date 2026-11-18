@@ -1,18 +1,30 @@
 # Systems Performance Engine
 
-Systems Performance Engine (SPE) is a C++20 CLI for measuring how a backend endpoint responds under concurrent load. Run the same GET workload before and after a service change, then use `spe compare` to inspect differences in throughput, latency, and request outcomes.
+Systems Performance Engine (SPE) is a C++20 command-line tool for running concurrent HTTP and HTTPS workloads and comparing backend service performance.
 
-**Early development.** Comparisons are descriptive. In controlled Spring Petclinic experiments, SPE and k6 both observed the slowdown from an added 5 ms delay. For a change that removed a redundant owner lookup, variation between unchanged runs left the performance effect unresolved. [Experiment results and controls](docs/VALIDATION.md#executed-local-timing-observations)
+## Aim
 
-## Implemented
+Help backend developers understand how code changes affect service performance before those changes reach production. For example, after changing a database query, run the same endpoint workload against both versions and compare throughput, tail latency, and failures. Repeating the workload against unchanged code gives those differences context.
 
-- HTTP/1.1 GET over HTTP or verified HTTPS, with connection reuse, optional custom CA trust, and request headers from a private file. Header values are omitted from reports. The target URL, including its query, is recorded.
-- Closed-loop execution with bounded concurrency, request counts, timeouts, and response sizes. Versioned JSON records completed requests, failures by category, cancellations, and requests that never started.
-- Successful throughput and client-observed latency, including mean and nearest-rank p50, p95, and p99. Comparison accepts one or more compatible runs per version, reports run-to-run variation, and withholds performance deltas for failed or incomplete runs.
+## Current capabilities
+
+**Early development.** The native runner and saved-result comparison are implemented. Additional HTTP methods, request bodies, fixed-arrival-rate scheduling, trace replay, and statistical regression detection are planned.
+
+- Run concurrent HTTP/1.1 GET requests with connection reuse and configurable limits on requests, concurrency, timeouts, and response size.
+- Test authenticated endpoints with verified HTTPS, optional custom CA trust, and headers loaded from a private file. Reports omit header values and retain the target URL, including its query.
+- Record throughput, mean latency, and nearest-rank p50, p95, and p99 in versioned JSON. Request counts distinguish successes, failures, cancellations, and requests that never started.
+- Compare one or more compatible saved runs per version with `spe compare`. It reports percentage changes and run-to-run variation. Failed or incomplete runs produce diagnostics without performance deltas.
 
 ## Platforms
 
-The native engine runs on macOS and Linux. Builds require CMake 3.24+, a C++20 compiler, and libcurl 7.85+ with asynchronous DNS. HTTPS requires a TLS-enabled libcurl. Linux also requires OpenSSL Crypto development files. Tests use Python 3.10+ and the OpenSSL CLI. CI covers Release and ASan/UBSan on Ubuntu x86-64. Windows is unsupported. [Build and platform details](docs/USAGE.md#build-and-test)
+| Platform | Verification |
+| --- | --- |
+| macOS arm64 | Built and tested locally with Apple Clang 16 and libcurl 8.7.1. |
+| Linux arm64 | Release and ASan/UBSan tests passed on Ubuntu 24.04 in Docker. |
+| Linux x86-64 | GitHub Actions runs Release and ASan/UBSan tests on Ubuntu 24.04. |
+| Windows | Unsupported. |
+
+Building requires a C++20 compiler, CMake 3.24+, and libcurl 7.85+ with asynchronous DNS. HTTPS requires TLS support in libcurl. Linux also requires OpenSSL Crypto development files. Tests use Python 3.10+ and the OpenSSL CLI.
 
 ## Run and compare
 
@@ -39,11 +51,18 @@ build/release/spe compare "$results/baseline.json" "$results/candidate.json"
 
 This is an unchanged-service control. Both labels refer to the same code, so the observed difference illustrates run-to-run variation. To measure a code change, run the baseline, replace the service with the candidate at the same address, and repeat the workload. Stop the example service with Ctrl-C.
 
-## Measurement limits and planned work
+## Interpreting results
 
-A closed-loop client sends the next request when a slot frees up. A slow response therefore reduces the offered load. Latency includes connection setup when needed and the time until the client observes completion. One run per version cannot establish repeatability, and SPE does not compute statistical significance.
+SPE uses a closed-loop workload. Each client slot waits for a request to finish before sending the next, so the offered load falls as responses slow down. Latency is measured at the client and includes connection setup when needed.
 
-Additional HTTP methods and request bodies, fixed-arrival-rate scheduling, trace replay, and statistical regression detection are future work. [Roadmap](docs/ROADMAP.md) · [Architecture](docs/ARCHITECTURE.md)
+In controlled Spring Petclinic experiments, SPE and k6 both observed a slowdown when the service added a 5 ms delay. Removing a redundant owner lookup produced a much smaller difference that unchanged-code variation could explain. SPE reports observed differences and leaves regression judgments to the reader. [Experiment results and controls](docs/VALIDATION.md#executed-local-timing-observations)
+
+## Documentation
+
+- Build options, authentication, CLI flags, and result fields — [Usage reference](docs/USAGE.md)
+- Petclinic setup, k6 comparisons, and recorded findings — [Measurement validation](docs/VALIDATION.md)
+- The event loop, connection handling, and measurement boundaries — [Architecture](docs/ARCHITECTURE.md)
+- Work in progress and planned milestones — [Roadmap](docs/ROADMAP.md)
 
 ## License
 
