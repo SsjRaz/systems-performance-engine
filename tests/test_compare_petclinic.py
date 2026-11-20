@@ -60,6 +60,16 @@ class ResultChecks(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             self.validate(value)
 
+    def test_schema_five_requires_single_endpoint(self):
+        value = result()
+        value.update(schema_version=5, scheduling=None, endpoint_results=None)
+        value["workload"].update(model="closed_loop", arrival_schedule=None, endpoint_mix=None,
+                                headers={"names": [], "values": "redacted"})
+        self.validate(value)
+        value["workload"]["endpoint_mix"] = {"endpoints": []}
+        with self.assertRaises(RuntimeError):
+            self.validate(value)
+
     def test_wrong_workload_and_invalid_observations(self):
         variants = []
         value = result(); value["workload"]["concurrency"] = 8; variants.append(value)

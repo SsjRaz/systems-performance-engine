@@ -29,7 +29,7 @@ class HeaderHandler(Handler):
         counts = {name: len(self.headers.get_all(name, [])) for name in expected}
         matched = all(self.headers.get_all(name, []) == [value] for name, value in expected.items())
         with self.server.header_lock:
-            self.server.header_checks.append(dict(matched=matched, counts=counts, method=self.command))
+            self.server.header_checks.append(dict(matched=matched, counts=counts, method=self.command, path=self.path))
         if not matched:
             self.respond(401, b'unauthorized')  # No reflection of credentials, even on failure.
             return
@@ -71,11 +71,13 @@ class HeadersIntegration(unittest.TestCase):
             f.write(data)
         return path
 
-    def command(self, url, header_file, requests=20, concurrency=3, timeout=2000, output='-', fixed_rate=None):
+    def command(self, url, header_file, requests=20, concurrency=3, timeout=2000, output='-', fixed_rate=None, workload_file=None):
         workload = (['--requests', str(requests)] if fixed_rate is None else
                     ['--rate', str(fixed_rate[0]), '--duration-ms', str(fixed_rate[1])])
         args = [str(self.engine), url, *workload, '--concurrency', str(concurrency),
                 '--timeout-ms', str(timeout), '--headers-file', str(header_file), '--json', str(output)]
+        if workload_file is not None:
+            args += ['--workload-file', str(workload_file)]
         if url.startswith('https:'):
             args += ['--ca-file', str(self.certs/'root.pem')]
         self.assertNotIn(AUTH, args)
@@ -94,7 +96,7 @@ class HeadersIntegration(unittest.TestCase):
         exported = json.dumps(result)
         for private in (AUTH, API_KEY, str(command[command.index('--headers-file')+1])):
             self.assertNotIn(private, exported)
-        self.assertEqual(result['schema_version'], 4)
+        self.assertEqual(result['schema_version'], 5)
         self.assertEqual(result['workload']['headers'], dict(names=sorted(EXPECTED), values='redacted'))
         HttpIntegration.check_accounting(self, result)
         if output is None:
@@ -135,6 +137,20 @@ class HeadersIntegration(unittest.TestCase):
             self.assertEqual(result['scheduling']['offered'], 5)
             self.assertEqual(audit(service), dict(requests=5, matched=5, all_single_fields=True, methods=['GET']))
             self.assertEqual(len(service.observed()['tls_handshakes']), 1)
+
+    def test_weighted_paths_share_tls_connection_and_private_headers(self):
+        definition = self.artifacts/'private-workload-name.json'
+        definition.write_text(json.dumps(dict(endpoints=[dict(path='/one', weight=4), dict(path='/two', weight=1)])))
+        with RunningTLS(self.certs) as svc:
+            configure(svc)
+            result = self.execute('weighted-https', svc.url, self.private(), fixed_rate=(8, 1250),
+                                  concurrency=1, workload_file=definition)
+            self.assertEqual([e['counts']['successes'] for e in result['endpoint_results']], [8, 2])
+            self.assertEqual([x['path'] for x in svc.server.header_checks],
+                             ['/one', '/one', '/two', '/one', '/one'] * 2)
+            self.assertEqual(audit(svc)['matched'], 10)
+            self.assertEqual(len(svc.observed()['tls_handshakes']), 1)
+            self.assertNotIn(str(definition), json.dumps(result))
 
     def test_invalid_credentials_are_http_failures_and_exports_are_private(self):
         changed = dict(EXPECTED, authorization='Bearer spe-dummy-invalid-credential')

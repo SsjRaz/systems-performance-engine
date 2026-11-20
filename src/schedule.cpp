@@ -19,6 +19,7 @@ ArrivalSchedule::Offset ArrivalSchedule::next_wake() const {
 
 ArrivalSchedule::Decision ArrivalSchedule::advance(Offset elapsed, bool slot_available) {
     Decision decision;
+    decision.first = next_;
     if (elapsed >= window_) {
         decision.expired = total_ - next_;
         next_ = total_;

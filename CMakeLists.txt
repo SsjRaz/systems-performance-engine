@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(SystemsPerformanceEngine VERSION 0.4.0 LANGUAGES CXX)
+project(SystemsPerformanceEngine VERSION 0.5.0 LANGUAGES CXX)
 
 if(NOT UNIX)
     message(FATAL_ERROR "The initial engine supports POSIX platforms (macOS/Linux).")
@@ -45,7 +45,7 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
 endif()
 configure_file(src/build_info.hpp.in generated/spe/build_info.hpp @ONLY)
 
-add_library(spe_core src/config.cpp src/schedule.cpp src/engine.cpp src/result.cpp src/tls.cpp src/headers.cpp)
+add_library(spe_core src/config.cpp src/config_json.cpp src/workload.cpp src/schedule.cpp src/engine.cpp src/result.cpp src/tls.cpp src/headers.cpp)
 target_include_directories(spe_core PUBLIC include PRIVATE "${PROJECT_BINARY_DIR}/generated")
 target_include_directories(spe_core SYSTEM PRIVATE third_party/nlohmann/include)
 target_link_libraries(spe_core PUBLIC CURL::libcurl spe_options)
@@ -70,6 +70,9 @@ if(BUILD_TESTING)
     add_test(NAME integration COMMAND "${Python3_EXECUTABLE}"
         "${PROJECT_SOURCE_DIR}/tests/run_suite.py" --suite integration --engine "$<TARGET_FILE:spe>"
         --artifacts "${PROJECT_BINARY_DIR}/test-results/managed")
+    add_test(NAME mixed_workload COMMAND "${Python3_EXECUTABLE}"
+        "${PROJECT_SOURCE_DIR}/tests/run_suite.py" --suite mixed_workload --engine "$<TARGET_FILE:spe>"
+        --artifacts "${PROJECT_BINARY_DIR}/test-results/managed")
     add_test(NAME comparison COMMAND "${Python3_EXECUTABLE}"
         "${PROJECT_SOURCE_DIR}/tests/run_suite.py" --suite comparison --engine "$<TARGET_FILE:spe>"
         --artifacts "${PROJECT_BINARY_DIR}/test-results/managed")
@@ -87,7 +90,7 @@ if(BUILD_TESTING)
         "${PROJECT_SOURCE_DIR}/tests/test_compare_petclinic.py")
     add_test(NAME target_unit COMMAND "${Python3_EXECUTABLE}"
         "${PROJECT_SOURCE_DIR}/tests/test_prepare_petclinic.py")
-    set_tests_properties(integration PROPERTIES TIMEOUT 120 LABELS "network;integration")
+    set_tests_properties(integration mixed_workload PROPERTIES TIMEOUT 120 LABELS "network;integration")
     set_tests_properties(comparison PROPERTIES TIMEOUT 120 LABELS "comparison;network;integration")
     set_tests_properties(https PROPERTIES TIMEOUT 180 LABELS "tls;network;integration")
     set_tests_properties(headers PROPERTIES TIMEOUT 180 LABELS "headers;tls;network;integration")

@@ -12,6 +12,7 @@ The project is building toward reproducible comparisons of backend service versi
 | Secure HTTPS | Implemented | Verified certificates/hostnames, TLS 1.2 minimum, custom CA bundles, TLS failure accounting, and real TLS tests. |
 | Configurable GET headers | Implemented | Private file input, strict field policy, redacted reports, explicit comparison acknowledgement, and authenticated HTTP/HTTPS tests. |
 | Fixed-arrival-rate scheduling | Implemented | Monotonic deadlines, bounded admission, dispatch-delay measurements and explicit missed arrivals. |
+| Two-endpoint GET workloads | Implemented | Reproducible weighted assignment on one origin with per-path outcomes, latency and overload accounting. |
 | Statistical comparison | Planned | Validated uncertainty methods and practical decision rules based on experimental runs or JVM blocks. |
 | Workload and CI extensions | Under consideration | Broader HTTP workloads, automation, and result export. |
 

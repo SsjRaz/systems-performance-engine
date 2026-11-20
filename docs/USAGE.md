@@ -87,6 +87,25 @@ Slower responses occupy slots longer. Late wakes can also occur because of timer
 
 Missed arrivals produce exit code 3. `spe compare` requires matching models, target rates, windows, concurrency and overload policies. It displays arrival totals before request metrics and withholds performance deltas for missed work. Its JSON includes each input's scheduling summary.
 
+## Two-endpoint workloads
+
+Use an HTTP or HTTPS origin and a workload file with two distinct paths. This example assigns 800 of 1,000 arrivals to `/items` and 200 to `/vets`. It runs against the loopback fixture described above.
+
+```sh
+results=$(mktemp -d build/mix.XXXXXX)
+cat > "$results/workload.json" <<'JSON'
+{"endpoints":[{"path":"/items","weight":4},{"path":"/vets","weight":1}]}
+JSON
+build/release/spe http://127.0.0.1:8080 --workload-file "$results/workload.json" \
+  --rate 100 --duration-ms 10000 --concurrency 2 --json "$results/run.json"
+```
+
+The file is a regular JSON file of at most 64 KiB. Weights are positive integers up to 1,000,000. SPE reduces them to their lowest ratio. Paths start with one slash and use ASCII letters, digits, `-`, `.`, `_`, `~` and `/`. Empty interior segments, dot segments, query strings, fragments and percent escapes are rejected. The origin can end in a single slash. Use shareable route paths because the results identify them literally. Supply credentials through the existing private headers file. Both paths use the same TLS and header configuration.
+
+For each prefix of the schedule, SPE rounds the first path's proportional share to the nearest integer, with ties going to the first path. The second path gets the remaining arrivals. The 4:1 sequence starts `A A B A A` and repeats. Dropping an arrival preserves its assigned path. A stop leaves an unevaluated suffix in each path's budget.
+
+Each entry in `endpoint_results` includes the requested (planned), started, completed and successful counts, error categories, cancellations, misses at capacity, expired arrivals and unevaluated arrivals. `failed` counts completed errors. Both throughput rates use the full run elapsed time, including drain. Successful and completed latencies have separate exact nearest-rank summaries. Cancelled and undispatched arrivals contribute to neither distribution. Under overload the received mix can differ substantially from the planned mix.
+
 ## HTTPS and trust
 
 HTTPS targets use libcurl's TLS implementation with certificate-chain and hostname verification enabled, and TLS 1.2 as the minimum. Default roots come from the trust store configured for the installed libcurl/TLS backend. There is no insecure option, plaintext fallback, or redirect following.
@@ -101,7 +120,7 @@ build/release/spe 'https://localhost:8443/health' \
 
 The service must already be running with a certificate valid for the requested hostname or IP. `--ca-file` is HTTPS-only. The selected file must be regular, nonempty, and at most 1 MiB. The engine retains an immutable in-memory snapshot for the run and supplies it through `CURLOPT_CAINFO_BLOB`, clearing the default CA file/directory for custom trust. Unsupported custom-CA backends fail before dispatch. Custom trust is exercised on macOS SecureTransport/libcurl 8.7.1 and Linux OpenSSL/libcurl 8.5.0; other backends may reject this option. The engine does not install roots in the operating system or download a CA bundle.
 
-Result schemas 2 through 4 record the verification policy, minimum TLS version, and CA source. Custom bundles are identified by SHA-256; file paths and certificate contents are omitted. Default trust-store contents are not fingerprinted. A fingerprint identifies the selected bytes; it does not authenticate a saved result or establish environmental equivalence.
+Result schemas 2 through 5 record the verification policy, minimum TLS version, and CA source. Custom bundles are identified by SHA-256; file paths and certificate contents are omitted. Default trust-store contents are not fingerprinted. A fingerprint identifies the selected bytes; it does not authenticate a saved result or establish environmental equivalence.
 
 Recognized libcurl certificate, TLS handshake, and TLS configuration failures increment `tls_errors`; generic transport failures remain `network_errors`. A timeout during TLS negotiation or a secure response increments `timeouts`, and interrupted active requests are cancelled. TLS failures have no successful-latency samples. Original libcurl codes and generic descriptions are retained without exporting detailed certificate/path error buffers. Missing/unreadable or invalid-sized CA files fail before traffic; malformed certificate data is rejected by the TLS backend.
 
@@ -144,9 +163,9 @@ build/release/spe compare baseline.json candidate.json
 build/release/spe compare baseline.json candidate.json --json comparison.json
 ```
 
-The command reads local files; it does not start applications or generate traffic. It accepts SPE 0.1.0/schema 1 HTTP results, SPE 0.2.0/schema 2 HTTP/HTTPS results, SPE 0.3.0/schema 3 results with header metadata, and SPE 0.4.0/schema 4 results with explicit scheduling metadata. It validates request accounting, status maps, sample counts, numeric bounds, latency ordering, and consistency with the run window and throughput. Contracts cannot be mixed. Schema-1 inputs imply zero TLS errors and no TLS policy; schemas 1 and 2 imply no custom headers. Unsupported schemas, duplicate JSON keys, malformed inputs, and incompatible engine or workload metadata are rejected. Matching metadata cannot establish hardware equivalence, application identity, or measurement authenticity. k6's normalized results have different semantics and are rejected. Comparison reports use their own schema version 4 and `kind: spe_comparison`.
+The command reads local files; it does not start applications or generate traffic. It accepts SPE 0.1.0/schema 1 HTTP results, SPE 0.2.0/schema 2 HTTP/HTTPS results, SPE 0.3.0/schema 3 results with header metadata, SPE 0.4.0/schema 4 results with explicit scheduling metadata, and SPE 0.5.0/schema 5 results with endpoint mix metadata. It validates request accounting, status maps, sample counts, numeric bounds, latency ordering, and consistency with the run window and throughput. Contracts cannot be mixed. Schema-1 inputs imply zero TLS errors and no TLS policy; schemas 1 and 2 imply no custom headers. Unsupported schemas, duplicate JSON keys, malformed inputs, and incompatible engine or workload metadata are rejected. Matching metadata cannot establish hardware equivalence, application identity, or measurement authenticity. k6's normalized results have different semantics and are rejected. Comparison reports use their own schema version 5 and `kind: spe_comparison`.
 
-Request budgets, concurrency, timeout, body limit, execution policies, and all recorded engine build fields must match. Encoded endpoint paths and queries must match. Different hosts, ports, or IPv6 scopes require `--allow-origin-change`; this acknowledges the difference without verifying equivalent networks or environments. A changed path or query is still rejected.
+Request budgets, concurrency, timeout, body limit, execution policies, and all recorded engine build fields must match. Encoded endpoint paths and queries must match. Mixed runs require the same assignment rule, ordered paths and reduced weights. The report includes each path's delivery and miss counts, successful throughput, weighted mean latency and median of its per-run successful p95 values. Different hosts, ports, or IPv6 scopes require `--allow-origin-change`; this acknowledges the difference without verifying equivalent networks or environments. A changed path or query is still rejected.
 
 HTTP and HTTPS results cannot be compared as equivalent workloads. HTTPS inputs require the same verification/minimum-version policy and CA-source settings; custom bundles must have matching fingerprints. `--allow-origin-change` does not override these checks. Certificates served by application versions may differ if both validate under the same configured trust policy.
 
@@ -188,4 +207,4 @@ An executable example using recorded application measurements is in [measurement
 - Both models bound concurrency. Closed-loop dispatch is completion-driven. Proxies and redirects are disabled; connection reuse is enabled. There are no application-level retries, though libcurl can transparently retry an idempotent GET on a stale reused connection. Counts describe logical requests, not guaranteed wire attempts.
 - Exit codes: `0` all requested responses successful; `3` request failures/incomplete run; `2` invalid configuration; `1` engine/output error; `130` SIGINT; `143` SIGTERM. Initialization/configuration failures occur before a measured run; no measurement JSON is available, although a reserved new output file can remain empty.
 
-Body bytes are streamed without retention. Two bounded sample arrays retain exact latency observations (up to roughly 16 MB combined at the request cap, excluding container/library overhead). Fixed-rate runs reserve up to another 8 MB for dispatch delays. Percentile sorting occurs after the measurement window. Response headers, TLS buffers, and parsed trust stores are managed by libcurl and its backend. JSON includes the target URL and query; exported evidence can therefore contain sensitive input values. Remote DNS, platform certificate validation, and system scheduling can affect timeout and cancellation observation; local tests do not establish hard real-time guarantees or representative throughput capacity.
+Body bytes are streamed without retention. Two bounded sample arrays retain exact latency observations (up to roughly 16 MB combined at the request cap, excluding container/library overhead). Fixed-rate runs reserve up to another 8 MB for dispatch delays. Mixed runs reserve up to 16 MB more for per-endpoint successful and completed duration samples, distributed across paths by planned counts. Percentile sorting occurs after the measurement window. Response headers, TLS buffers, and parsed trust stores are managed by libcurl and its backend. JSON includes the target URL and query; exported evidence can therefore contain sensitive input values. Remote DNS, platform certificate validation, and system scheduling can affect timeout and cancellation observation; local tests do not establish hard real-time guarantees or representative throughput capacity.

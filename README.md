@@ -12,6 +12,7 @@ Help backend developers understand how code changes affect service performance b
 
 - Run concurrent HTTP/1.1 GET requests with connection reuse and configurable limits on requests, concurrency, timeouts, and response size.
 - Set a target arrival rate and duration with `--rate` and `--duration-ms`. The runner measures dispatch delay and counts arrivals missed under overload. [Fixed-rate scheduling](docs/USAGE.md#fixed-rate-scheduling)
+- Run two weighted GET paths on one origin and see throughput, latency and missed arrivals for each path. [Endpoint mixes](docs/USAGE.md#two-endpoint-workloads)
 - Test authenticated endpoints with verified HTTPS, optional custom CA trust, and headers loaded from a private file. Reports omit header values and retain the target URL, including its query.
 - Record throughput, mean latency, and nearest-rank p50, p95, and p99 in versioned JSON. Request counts distinguish successes, failures, cancellations, and requests that never started.
 - Compare one or more compatible saved runs per version with `spe compare`. It reports percentage changes and run-to-run variation. Failed or incomplete runs produce diagnostics without performance deltas.

@@ -40,6 +40,7 @@ struct Slot {
     Clock::time_point started;
     std::size_t body_bytes = 0;
     std::size_t body_limit = 0;
+    std::size_t endpoint = 0;
     bool body_limit_hit = false;
     bool active = false;
 };
@@ -114,6 +115,12 @@ RunResult run(const Config& config, const std::function<bool()>& stop_requested)
     const auto user_agent = std::string("systems-performance-engine/") + std::string(version());
     const auto budget = config.request_budget();
     const auto limit = std::min(config.concurrency, static_cast<std::size_t>(budget));
+    std::vector<std::string> endpoint_urls;
+    if (config.mix) {
+        auto origin = config.url;
+        if (origin.ends_with('/')) origin.pop_back();
+        for (const auto& endpoint : config.mix->endpoints()) endpoint_urls.push_back(origin + endpoint.path);
+    }
     std::vector<std::unique_ptr<Slot>> slots;
     slots.reserve(limit);
     for (std::size_t i = 0; i < limit; ++i) {
@@ -121,7 +128,7 @@ RunResult run(const Config& config, const std::function<bool()>& stop_requested)
         if (!slot->easy) throw std::runtime_error("cannot allocate libcurl request handle");
         auto* easy = slot->easy.get();
         slot->body_limit = config.max_body_bytes;
-        check(curl_easy_setopt(easy, CURLOPT_URL, config.url.c_str()));
+        check(curl_easy_setopt(easy, CURLOPT_URL, endpoint_urls.empty() ? config.url.c_str() : endpoint_urls.front().c_str()));
         check(curl_easy_setopt(easy, CURLOPT_PROTOCOLS_STR, https ? "https" : "http"));
         check(curl_easy_setopt(easy, CURLOPT_HTTP_VERSION, static_cast<long>(CURL_HTTP_VERSION_1_1)));
         check(curl_easy_setopt(easy, CURLOPT_HTTPGET, 1L));
@@ -173,7 +180,11 @@ RunResult run(const Config& config, const std::function<bool()>& stop_requested)
         for (const auto& slot : slots) ready.push_back(slot.get());
     }
     const auto begin = Clock::now();
-    const auto start = [&](Slot& slot, std::optional<ArrivalSchedule::Offset> deadline = {}) {
+    const auto start = [&](Slot& slot, std::optional<ArrivalSchedule::Offset> deadline = {}, std::size_t endpoint = 0) {
+        if (slot.endpoint != endpoint) {
+            check(curl_easy_setopt(slot.easy.get(), CURLOPT_URL, endpoint_urls.at(endpoint).c_str()));
+            slot.endpoint = endpoint;
+        }
         slot.body_bytes = 0;
         slot.body_limit_hit = false;
         slot.started = Clock::now();
@@ -183,7 +194,7 @@ RunResult run(const Config& config, const std::function<bool()>& stop_requested)
         if (deadline) {
             delay_ms = std::chrono::duration<double, std::milli>((slot.started - begin) - *deadline).count();
         }
-        measurements.start(delay_ms);
+        measurements.start(delay_ms, endpoint);
         ++in_flight;
         peak = std::max(peak, in_flight);
     };
@@ -202,7 +213,7 @@ RunResult run(const Config& config, const std::function<bool()>& stop_requested)
             long status = 0;
             check(curl_easy_getinfo(message->easy_handle, CURLINFO_RESPONSE_CODE, &status));
             check(curl_multi_remove_handle(multi.get(), message->easy_handle));
-            measurements.record(classify(code, status, slot.body_limit_hit), duration, status, static_cast<int>(code));
+            measurements.record(classify(code, status, slot.body_limit_hit), duration, status, static_cast<int>(code), slot.endpoint);
             slot.active = false;
             --in_flight;
             ready.push_back(&slot);
@@ -218,9 +229,10 @@ RunResult run(const Config& config, const std::function<bool()>& stop_requested)
                 const auto now = Clock::now();
                 const auto elapsed = std::chrono::duration_cast<ArrivalSchedule::Offset>(now - begin);
                 const auto due = schedule->advance(elapsed, !ready.empty());
-                measurements.miss_arrivals(due.expired, due.at_capacity);
+                measurements.miss_arrivals(due.expired, due.at_capacity, due.first);
                 if (due.dispatch) {
-                    start(*ready.back(), due.dispatch);
+                    const auto endpoint = config.mix ? config.mix->endpoint_at(due.first + due.expired) : 0;
+                    start(*ready.back(), due.dispatch, endpoint);
                     ready.pop_back();
                     continue; // Drive newly registered work before blocking on sockets.
                 }
@@ -265,7 +277,7 @@ RunResult run(const Config& config, const std::function<bool()>& stop_requested)
         if (code != CURLM_OK && engine_error.empty()) engine_error = curl_multi_strerror(code);
         slot->active = false;
         measurements.record(Outcome::cancelled,
-            std::chrono::duration<double, std::milli>(Clock::now() - slot->started).count());
+            std::chrono::duration<double, std::milli>(Clock::now() - slot->started).count(), 0, 0, slot->endpoint);
     }
     const auto elapsed = std::chrono::duration<double>(Clock::now() - begin).count();
     return measurements.finish(elapsed, peak, interrupted, std::move(engine_error));
