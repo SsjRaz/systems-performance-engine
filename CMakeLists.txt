@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(SystemsPerformanceEngine VERSION 0.3.0 LANGUAGES CXX)
+project(SystemsPerformanceEngine VERSION 0.4.0 LANGUAGES CXX)
 
 if(NOT UNIX)
     message(FATAL_ERROR "The initial engine supports POSIX platforms (macOS/Linux).")
@@ -45,7 +45,7 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
 endif()
 configure_file(src/build_info.hpp.in generated/spe/build_info.hpp @ONLY)
 
-add_library(spe_core src/config.cpp src/engine.cpp src/result.cpp src/tls.cpp src/headers.cpp)
+add_library(spe_core src/config.cpp src/schedule.cpp src/engine.cpp src/result.cpp src/tls.cpp src/headers.cpp)
 target_include_directories(spe_core PUBLIC include PRIVATE "${PROJECT_BINARY_DIR}/generated")
 target_include_directories(spe_core SYSTEM PRIVATE third_party/nlohmann/include)
 target_link_libraries(spe_core PUBLIC CURL::libcurl spe_options)

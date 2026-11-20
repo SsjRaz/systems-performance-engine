@@ -42,8 +42,21 @@ bool is_https_url(std::string_view url) {
     });
 }
 
+std::uint64_t FixedRate::planned_arrivals() const {
+    if (per_second == 0 || per_second > max_requests)
+        throw std::invalid_argument("--rate must be in [1, 1000000] requests per second");
+    if (duration_ms == 0 || duration_ms > 3'600'000)
+        throw std::invalid_argument("--duration-ms must be in [1, 3600000]");
+    // First arrival at t=0, last strictly before the end of the window.
+    const auto count = (per_second * duration_ms + 999) / 1000;
+    if (count > max_requests)
+        throw std::invalid_argument("fixed-rate schedule exceeds 1000000 arrivals");
+    return count;
+}
+
 void validate_config(const Config& config) {
-    if (config.requests == 0 || config.requests > max_requests) {
+    const auto budget = config.request_budget();
+    if (budget == 0 || budget > max_requests) {
         throw std::invalid_argument("--requests must be in [1, 1000000]");
     }
     if (config.concurrency == 0 || config.concurrency > max_concurrency) {
@@ -85,6 +98,7 @@ void validate_config(const Config& config) {
 CliOptions parse_cli(std::span<const std::string_view> arguments) {
     CliOptions options;
     std::set<std::string_view> seen;
+    FixedRate rate{};
     for (std::size_t i = 0; i < arguments.size(); ++i) {
         const auto arg = arguments[i];
         if (arg == "--help" || arg == "-h") {
@@ -92,7 +106,7 @@ CliOptions parse_cli(std::span<const std::string_view> arguments) {
         } else if (arg == "--version") {
             options.version = true;
         } else if (arg.starts_with('-')) {
-            if (arg != "--requests" && arg != "--concurrency" && arg != "--timeout-ms" &&
+            if (arg != "--requests" && arg != "--rate" && arg != "--duration-ms" && arg != "--concurrency" && arg != "--timeout-ms" &&
                 arg != "--max-body-bytes" && arg != "--json" && arg != "--ca-file" && arg != "--headers-file") {
                 throw std::invalid_argument("unknown option: " + std::string(arg));
             }
@@ -126,6 +140,8 @@ CliOptions parse_cli(std::span<const std::string_view> arguments) {
                 throw std::invalid_argument("value too large for " + std::string(arg));
             }
             if (arg == "--requests") options.config.requests = n;
+            if (arg == "--rate") rate.per_second = n;
+            if (arg == "--duration-ms") rate.duration_ms = n;
             if (arg == "--concurrency") options.config.concurrency = static_cast<std::size_t>(n);
             if (arg == "--timeout-ms") options.config.timeout_ms = static_cast<long>(n);
             if (arg == "--max-body-bytes") options.config.max_body_bytes = static_cast<std::size_t>(n);
@@ -136,6 +152,11 @@ CliOptions parse_cli(std::span<const std::string_view> arguments) {
             options.config.url = arg;
         }
     }
+    if (seen.contains("--rate") || seen.contains("--duration-ms")) {
+        if (!seen.contains("--rate") || !seen.contains("--duration-ms") || seen.contains("--requests"))
+            throw std::invalid_argument("use --rate and --duration-ms together, without --requests");
+        options.config.fixed_rate = rate;
+    }
     if (!options.help && !options.version) validate_config(options.config);
     return options;
 }
@@ -143,6 +164,8 @@ CliOptions parse_cli(std::span<const std::string_view> arguments) {
 std::string_view usage() {
     return "Usage: spe <http[s]://host[:port]/path> [options]\n"
            "  --requests N        Total logical requests, 1..1000000 (default 1000)\n"
+           "  --rate N            Fixed arrivals/second (positive integer); requires --duration-ms instead of --requests\n"
+           "  --duration-ms N     Arrival window, 1..3600000 ms; at most 1000000 planned arrivals\n"
            "  --concurrency N     Maximum in-flight requests, 1..1024 (default 10)\n"
            "  --timeout-ms N      Total per-request timeout, 1..3600000 (default 1000)\n"
            "  --max-body-bytes N  Response body limit, 1..1073741824 (default 16777216)\n"

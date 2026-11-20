@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -9,6 +10,12 @@
 namespace spe {
 inline constexpr std::uint64_t max_requests = 1'000'000;
 inline constexpr std::size_t max_concurrency = 1024;
+
+struct FixedRate {
+    std::uint64_t per_second;
+    std::uint64_t duration_ms;
+    std::uint64_t planned_arrivals() const;
+};
 
 struct Config {
     std::string url;
@@ -19,6 +26,11 @@ struct Config {
     std::string json_path;
     std::string ca_file;
     std::string headers_file;
+    std::optional<FixedRate> fixed_rate;
+
+    std::uint64_t request_budget() const {
+        return fixed_rate ? fixed_rate->planned_arrivals() : requests;
+    }
 };
 
 struct CliOptions {

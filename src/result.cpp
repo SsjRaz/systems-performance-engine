@@ -98,17 +98,39 @@ Measurements::Measurements(const Config& config, std::string ca_bundle_sha256, s
     result_.config = config;
     result_.ca_bundle_sha256 = std::move(ca_bundle_sha256);
     result_.header_names = std::move(header_names);
-    result_.counters.requested = config.requests;
+    const auto budget = static_cast<std::size_t>(config.request_budget());
+    result_.counters.requested = budget;
     result_.started_at_utc = utc_timestamp();
-    successful_.reserve(static_cast<std::size_t>(config.requests));
-    completed_.reserve(static_cast<std::size_t>(config.requests));
+    successful_.reserve(budget);
+    completed_.reserve(budget);
+    if (config.fixed_rate) dispatch_delays_.reserve(budget);
 }
 
-void Measurements::start() {
-    if (result_.counters.started == result_.counters.requested) {
+std::uint64_t Measurements::remaining_arrivals() const {
+    const auto& c = result_.counters;
+    return c.requested - c.started - result_.scheduling.missed_late - result_.scheduling.missed_capacity;
+}
+
+void Measurements::start(std::optional<double> dispatch_delay_ms) {
+    if (result_.config.fixed_rate.has_value() != dispatch_delay_ms.has_value())
+        throw std::logic_error("dispatch timing must match the workload model");
+    if (remaining_arrivals() == 0) {
         throw std::logic_error("request count exceeded");
     }
+    if (dispatch_delay_ms) {
+        if (!std::isfinite(*dispatch_delay_ms) || *dispatch_delay_ms < 0)
+            throw std::logic_error("invalid dispatch delay");
+        dispatch_delays_.push_back(*dispatch_delay_ms);
+    }
     ++result_.counters.started;
+}
+
+void Measurements::miss_arrivals(std::uint64_t expired, bool at_capacity) {
+    const auto remaining = remaining_arrivals();
+    if (!result_.config.fixed_rate || expired > remaining || (at_capacity && expired == remaining))
+        throw std::logic_error("invalid missed arrival count");
+    result_.scheduling.missed_late += expired;
+    if (at_capacity) ++result_.scheduling.missed_capacity;
 }
 
 void Measurements::record(Outcome outcome, double duration_ms, long http_status, int transport_error) {
@@ -140,6 +162,18 @@ RunResult Measurements::finish(double elapsed_seconds, std::size_t peak_in_fligh
     c.not_started = c.requested - c.started;
     if (!c.valid()) throw std::logic_error("request accounting invariant violated");
     if (!std::isfinite(elapsed_seconds) || elapsed_seconds < 0) throw std::invalid_argument("invalid elapsed time");
+    if (const auto rate = result_.config.fixed_rate) {
+        auto& s = result_.scheduling;
+        s.offered = c.started + s.missed_late + s.missed_capacity;
+        if (s.offered > c.requested || (!interrupted && engine_error.empty() && s.offered != c.requested))
+            throw std::logic_error("arrival accounting invariant violated");
+        s.window_seconds = std::min(elapsed_seconds, static_cast<double>(rate->duration_ms) / 1000);
+        if (s.window_seconds > 0) {
+            s.offered_rps = static_cast<double>(s.offered) / s.window_seconds;
+            s.dispatched_rps = static_cast<double>(c.started) / s.window_seconds;
+        }
+        s.dispatch_delay_ms = summarize_latencies(std::move(dispatch_delays_));
+    }
     result_.elapsed_seconds = elapsed_seconds;
     if (elapsed_seconds > 0) {
         result_.completed_throughput_rps = static_cast<double>(c.completed) / elapsed_seconds;
@@ -158,7 +192,7 @@ std::string_view version() { return build_info::version; }
 void write_json(std::ostream& out, const RunResult& r) {
     out.imbue(std::locale::classic());
     out << std::defaultfloat << std::setprecision(17);
-    out << "{\n  \"schema_version\":3,\n  \"engine\":{\"version\":";
+    out << "{\n  \"schema_version\":4,\n  \"engine\":{\"version\":";
     quoted(out, version());
     out << ",\"source_revision\":"; quoted(out, build_info::revision);
     out << ",\"compiler\":"; quoted(out, build_info::compiler);
@@ -169,9 +203,15 @@ void write_json(std::ostream& out, const RunResult& r) {
     out << ",\"libcurl\":"; quoted(out, curl_version());
     out << "},\n  \"started_at_utc\":"; quoted(out, r.started_at_utc);
     out << ",\n  \"workload\":{\"url\":"; quoted(out, r.config.url);
-    out << ",\"method\":\"GET\",\"http_version\":\"1.1\",\"model\":\"closed_loop\","
-           "\"redirects\":false,\"proxy\":false,\"connection_reuse\":true,\"warmup_requests\":0,"
-           "\"application_retries\":0,\"success_policy\":\"complete_2xx\",\"requests\":" << r.config.requests
+    out << ",\"method\":\"GET\",\"http_version\":\"1.1\",\"model\":";
+    quoted(out, r.config.fixed_rate ? "fixed_arrival_rate" : "closed_loop");
+    out << ",\"arrival_schedule\":";
+    if (const auto rate = r.config.fixed_rate) {
+        out << "{\"target_rps\":" << rate->per_second << ",\"duration_ms\":" << rate->duration_ms
+            << ",\"overload_policy\":\"skip_expired_drop_at_capacity\"}";
+    } else out << "null";
+    out << ",\"redirects\":false,\"proxy\":false,\"connection_reuse\":true,\"warmup_requests\":0,"
+           "\"application_retries\":0,\"success_policy\":\"complete_2xx\",\"requests\":" << r.counters.requested
         << ",\"concurrency\":" << r.config.concurrency << ",\"timeout_ms\":" << r.config.timeout_ms
         << ",\"max_body_bytes\":" << r.config.max_body_bytes << ",\"tls\":";
     if (is_https_url(r.config.url)) {
@@ -189,6 +229,17 @@ void write_json(std::ostream& out, const RunResult& r) {
     }
     out << "],\"values\":\"redacted\"}},\n";
     const auto& c = r.counters;
+    out << "  \"scheduling\":";
+    if (r.config.fixed_rate) {
+        const auto& s = r.scheduling;
+        out << "{\"offered\":" << s.offered << ",\"missed_capacity\":" << s.missed_capacity
+            << ",\"missed_late\":" << s.missed_late << ",\"not_evaluated\":" << c.requested - s.offered
+            << ",\"window_seconds\":" << s.window_seconds << ",\"offered_rps\":" << s.offered_rps
+            << ",\"dispatched_rps\":" << s.dispatched_rps << ",\"dispatch_delay_ms\":";
+        latency_json(out, s.dispatch_delay_ms);
+        out << '}';
+    } else out << "null";
+    out << ",\n";
     out << "  \"counts\":{\"requested\":" << c.requested << ",\"started\":" << c.started
         << ",\"completed\":" << c.completed << ",\"successes\":" << c.successes
         << ",\"http_errors\":" << c.http_errors << ",\"connection_errors\":" << c.connection_errors
@@ -235,6 +286,17 @@ void write_summary(std::ostream& out, const RunResult& r) {
         << " network=" << c.network_errors << " TLS=" << c.tls_errors << " timeout=" << c.timeouts
         << " response_limit=" << c.response_limit_errors << '\n'
         << "Incomplete: cancelled=" << c.cancelled << " not_started=" << c.not_started << '\n';
+    if (const auto rate = r.config.fixed_rate) {
+        const auto& s = r.scheduling;
+        out << "Arrivals: planned=" << c.requested << " offered=" << s.offered << " dispatched=" << c.started
+            << " missed_capacity=" << s.missed_capacity << " missed_late=" << s.missed_late
+            << " not_evaluated=" << c.requested - s.offered << '\n'
+            << "Arrival window: " << s.window_seconds << " s; target=" << rate->per_second
+            << " offered=" << s.offered_rps << " dispatched=" << s.dispatched_rps << " req/s\n";
+        if (s.dispatch_delay_ms.samples)
+            out << "Dispatch delay (ms): p50=" << s.dispatch_delay_ms.p50 << " p95=" << s.dispatch_delay_ms.p95
+                << " p99=" << s.dispatch_delay_ms.p99 << " max=" << s.dispatch_delay_ms.max << '\n';
+    }
     if (c.tls_errors) for (const auto& [code, count] : r.transport_error_counts)
         if (is_tls_error(code)) out << "TLS error " << code << ": " << curl_easy_strerror(static_cast<CURLcode>(code)) << " (" << count << ")\n";
     const auto& s = r.success_latency_ms;

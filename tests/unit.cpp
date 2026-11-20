@@ -1,4 +1,5 @@
 #include "spe/config.hpp"
+#include "spe/schedule.hpp"
 #include "spe/engine.hpp"
 #include "spe/result.hpp"
 #include "spe/tls.hpp"
@@ -79,6 +80,55 @@ void cli_and_validation() {
             {"http://localhost/", "--headers-file", "a", "--headers-file", "b"}}) {
         invalid([&] { spe::parse_cli(bad); });
     }
+}
+
+void fixed_rate_schedule() {
+    using namespace std::chrono_literals;
+    const auto parse = [](std::initializer_list<std::string_view> options) {
+        std::vector<std::string_view> args{"http://localhost/"};
+        args.insert(args.end(), options);
+        return spe::parse_cli(args).config;
+    };
+    require(parse({"--rate", "3", "--duration-ms", "1001"}).request_budget() == 4, "fractional final period");
+    require(parse({"--duration-ms", "1", "--rate", "1"}).request_budget() == 1, "sub-period window");
+    require(parse({"--rate", "1000000", "--duration-ms", "1000"}).request_budget() == spe::max_requests, "bounded maximum");
+    for (std::initializer_list<std::string_view> args : {
+            std::initializer_list<std::string_view>{"--rate", "1"}, {"--duration-ms", "1"},
+            {"--rate", "0", "--duration-ms", "1"}, {"--rate", "1", "--duration-ms", "0"},
+            {"--rate", "1", "--duration-ms", "1", "--requests", "1"},
+            {"--rate", "1000000", "--duration-ms", "1001"}, {"--rate", "1", "--duration-ms", "3600001"},
+            {"--rate", "18446744073709551615", "--duration-ms", "2"}}) {
+        invalid([&] { parse(args); });
+    }
+    spe::ArrivalSchedule s({3, 1001});
+    require(s.next_wake() == 0ns && s.advance(10ns, true).dispatch == 0ns, "immediate first arrival");
+    require(s.next_wake() == 333333334ns && !s.advance(333333333ns, true).dispatch, "never before fractional deadline");
+    auto due = s.advance(666666667ns, true);
+    require(due.expired == 1 && due.dispatch == 666666667ns && !due.at_capacity, "only newest due arrival eligible");
+    require(!s.advance(666666667ns, true).dispatch && s.next_wake() == 1s, "no replay at same instant");
+    due = s.advance(1s, false);
+    require(due.at_capacity && !due.dispatch && due.expired == 0, "full capacity drops current arrival");
+    require(s.next_wake() == 1001ms && !s.advance(1001ms, true).dispatch, "exclusive end, no backlog");
+    spe::ArrivalSchedule stalled({1000, 1000});
+    due = stalled.advance(1s, true);
+    require(due.expired == 1000 && !due.dispatch && !due.at_capacity, "window expired while scheduler asleep");
+    require(stalled.advance(2s, true).expired == 0, "each missed tick counted once");
+
+    auto c = parse({"--rate", "3", "--duration-ms", "1001"});
+    spe::Measurements measured(c);
+    invalid([&] { measured.miss_arrivals(std::numeric_limits<std::uint64_t>::max(), true); });
+    invalid([&] { measured.miss_arrivals(4, true); });
+    measured.start(0.0);
+    measured.record(spe::Outcome::success, 1.0, 200);
+    measured.miss_arrivals(2, true);
+    invalid([&] { measured.start(0.0); });
+    const auto full = measured.finish(1.001, 1, false);
+    require(full.scheduling.offered == 4 && full.scheduling.missed_late == 2 &&
+            full.scheduling.missed_capacity == 1, "started and missed arrivals share one bounded budget");
+
+    auto result = spe::run(c, [] { return true; });
+    require(result.interrupted && result.counters.not_started == 4 && result.scheduling.offered == 0 &&
+            result.scheduling.dispatch_delay_ms.samples == 0, "stop before schedule starts");
 }
 
 void percentiles() {
@@ -175,6 +225,7 @@ int main() {
         catch (const std::exception& error) { ++failures; std::cerr << "FAIL " << name << ": " << error.what() << '\n'; }
     };
     test("CLI and validation", cli_and_validation);
+    test("fixed-rate schedule", fixed_rate_schedule);
     test("percentiles", percentiles);
     test("accounting", accounting);
     test("JSON and pre-dispatch cancellation", json_and_cancellation);

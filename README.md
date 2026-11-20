@@ -8,9 +8,10 @@ Help backend developers understand how code changes affect service performance b
 
 ## Current capabilities
 
-**Early development.** The native runner and saved-result comparison are implemented. Additional HTTP methods, request bodies, fixed-arrival-rate scheduling, trace replay, and statistical regression detection are planned.
+**Early development.** The native runner and saved-result comparison are implemented. Additional HTTP methods, request bodies, trace replay, and statistical regression detection are planned.
 
 - Run concurrent HTTP/1.1 GET requests with connection reuse and configurable limits on requests, concurrency, timeouts, and response size.
+- Set a target arrival rate and duration with `--rate` and `--duration-ms`. The runner measures dispatch delay and counts arrivals missed under overload. [Fixed-rate scheduling](docs/USAGE.md#fixed-rate-scheduling)
 - Test authenticated endpoints with verified HTTPS, optional custom CA trust, and headers loaded from a private file. Reports omit header values and retain the target URL, including its query.
 - Record throughput, mean latency, and nearest-rank p50, p95, and p99 in versioned JSON. Request counts distinguish successes, failures, cancellations, and requests that never started.
 - Compare one or more compatible saved runs per version with `spe compare`. It reports percentage changes and run-to-run variation. Failed or incomplete runs produce diagnostics without performance deltas.
@@ -53,7 +54,7 @@ This is an unchanged-service control. Both labels refer to the same code, so the
 
 ## Interpreting results
 
-SPE uses a closed-loop workload. Each client slot waits for a request to finish before sending the next, so the offered load falls as responses slow down. Latency is measured at the client and includes connection setup when needed.
+The default closed-loop workload refills each client slot on completion, so the offered load falls as responses slow down. A fixed-rate workload schedules arrivals independently. Check delivered and missed counts before interpreting its latency percentiles. Latency is measured at the client and includes connection setup when needed.
 
 In controlled Spring Petclinic experiments, SPE and k6 both observed a slowdown when the service added a 5 ms delay. Removing a redundant owner lookup produced a much smaller difference that unchanged-code variation could explain. SPE reports observed differences and leaves regression judgments to the reader. [Experiment results and controls](docs/VALIDATION.md#executed-local-timing-observations)
 

@@ -41,9 +41,20 @@ struct LatencySummary {
 // Exact nearest-rank percentiles. Empty sets serialize as null, not zero latency.
 LatencySummary summarize_latencies(std::vector<double> samples);
 
+struct SchedulingStats {
+    std::uint64_t missed_late = 0;
+    std::uint64_t missed_capacity = 0;
+    std::uint64_t offered = 0;
+    double window_seconds = 0;
+    double offered_rps = 0;
+    double dispatched_rps = 0;
+    LatencySummary dispatch_delay_ms;
+};
+
 struct RunResult {
     Config config;
     Counters counters;
+    SchedulingStats scheduling;
     LatencySummary success_latency_ms;
     LatencySummary completed_latency_ms;
     std::array<std::uint64_t, 600> http_status_counts{};
@@ -63,16 +74,19 @@ struct RunResult {
 class Measurements {
 public:
     explicit Measurements(const Config& config, std::string ca_bundle_sha256 = {}, std::vector<std::string> header_names = {});
-    void start();
+    void start(std::optional<double> dispatch_delay_ms = {});
+    void miss_arrivals(std::uint64_t expired, bool at_capacity);
     void record(Outcome outcome, double duration_ms, long http_status = 0, int transport_error = 0);
     const Counters& counters() const { return result_.counters; }
     RunResult finish(double elapsed_seconds, std::size_t peak_in_flight,
                      bool interrupted, std::string engine_error = {});
 
 private:
+    std::uint64_t remaining_arrivals() const;
     RunResult result_;
     std::vector<double> successful_;
     std::vector<double> completed_;
+    std::vector<double> dispatch_delays_;
 };
 
 void write_json(std::ostream& output, const RunResult& result);

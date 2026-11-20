@@ -16,7 +16,7 @@ import time
 import unittest
 from pathlib import Path
 
-from http_server import Server
+from http_server import Handler, Server
 
 
 class RunningService:
@@ -40,13 +40,32 @@ class RunningService:
         self.idle()
 
 
+class TimingService(RunningService):
+    """Observe receipt on the server's monotonic clock, independently of SPE."""
+    class TimedHandler(Handler):
+        def do_GET(self):
+            with self.server.state.lock:
+                self.server.receipts.append(time.monotonic_ns())
+            if self.server.processing_delay:
+                time.sleep(self.server.processing_delay)
+            super().do_GET()
+
+    def __enter__(self):
+        super().__enter__()
+        self.server.receipts = []
+        self.server.processing_delay = 0
+        self.server.RequestHandlerClass = self.TimedHandler
+        return self
+
+
 class HttpIntegration(unittest.TestCase):
     engine = None
     artifacts = None
     observations = []
 
     def command(self, url, requests=12, concurrency=3, timeout=1000, extra=()):
-        return [str(self.engine), url, "--requests", str(requests), "--concurrency", str(concurrency),
+        budget = [] if requests is None else ["--requests", str(requests)]
+        return [str(self.engine), url, *budget, "--concurrency", str(concurrency),
                 "--timeout-ms", str(timeout), "--json", "-", *extra]
 
     def retain(self, name, command, process, stdout, stderr, wall_seconds, expected):
@@ -59,6 +78,8 @@ class HttpIntegration(unittest.TestCase):
                            process_wall_seconds=wall_seconds, result=result)
         self.observations.append(observation)
         self.check_accounting(result)
+        if result["workload"]["model"] == "fixed_arrival_rate":
+            self.check_schedule(result)
         self.assertLessEqual(result["elapsed_seconds"], wall_seconds + 0.1)
         self.assertIsNone(result["engine_error"])
         return result
@@ -102,6 +123,93 @@ class HttpIntegration(unittest.TestCase):
                 self.assertEqual(ordered, sorted(ordered))
                 self.assertGreaterEqual(stats["min"], 0)
                 self.assertLessEqual(stats["max"], result["elapsed_seconds"] * 1000 + 1)
+
+    def fixed_run(self, name, service, rate, duration, *, path="/ok", **opts):
+        return self.execute(name, service.url + path, requests=None,
+                            extra=("--rate", str(rate), "--duration-ms", str(duration)), **opts)
+
+    def check_schedule(self, result):
+        c, s, spec = result["counts"], result["scheduling"], result["workload"]["arrival_schedule"]
+        self.assertEqual(c["requested"], (spec["target_rps"] * spec["duration_ms"] + 999) // 1000)
+        self.assertEqual(s["offered"], c["started"] + s["missed_capacity"] + s["missed_late"])
+        self.assertEqual(c["requested"], s["offered"] + s["not_evaluated"])
+        self.assertEqual(s["dispatch_delay_ms"]["samples"], c["started"])
+        window = min(result["elapsed_seconds"], spec["duration_ms"] / 1000)
+        self.assertEqual(s["window_seconds"], window)
+        self.assertAlmostEqual(s["offered_rps"], s["offered"] / window)
+        self.assertAlmostEqual(s["dispatched_rps"], c["started"] / window)
+        if not result["interrupted"]:
+            self.assertEqual(s["not_evaluated"], 0)
+            self.assertEqual(s["window_seconds"], spec["duration_ms"] / 1000)
+        if c["started"]:
+            self.assertLessEqual(s["dispatch_delay_ms"]["max"], result["elapsed_seconds"] * 1000 + 1e-6)
+
+    def test_fixed_rate_idle_pacing_and_server_receipts(self):
+        with TimingService() as svc:
+            r = self.fixed_run("paced", svc, 8, 1000, concurrency=1)
+            self.assertEqual(r["counts"]["successes"], 8)
+            times = svc.server.receipts
+            self.assertEqual(len(times), 8)
+            offsets = [(t - times[0]) / 1e6 for t in times]
+            # Functional tolerance for shared runners; exercise spacing as well as count.
+            self.assertLess(max(abs(t - i * 125) for i, t in enumerate(offsets)), 100)
+            self.observed("paced", dict(receipt_offsets_ms=offsets, state=svc.idle()))
+
+    def test_fixed_rate_overload_and_comparison(self):
+        with TimingService() as svc:
+            fast = self.fixed_run("paced-fast", svc, 20, 1000, concurrency=1)
+            self.assertEqual(fast["counts"]["successes"], 20)
+            svc.server.receipts.clear()
+            svc.server.processing_delay = 0.18
+            slow = self.fixed_run("paced-slow", svc, 20, 1000, concurrency=1, expected=3)
+            self.assertGreater(slow["scheduling"]["missed_capacity"], 0)
+            self.assertEqual(slow["counts"]["successes"], len(svc.server.receipts))
+            self.assertLessEqual(len(svc.server.receipts), 6)
+            self.assertEqual(slow["peak_in_flight"], 1)
+            process = subprocess.run([str(self.engine), "compare", self.artifacts/"paced-fast.json",
+                self.artifacts/"paced-slow.json", "--json", "-"], text=True, capture_output=True, timeout=10)
+            self.assertEqual(process.returncode, 3, process.stderr)
+            report = json.loads(process.stdout)
+            self.assertEqual(report["candidate"]["arrivals"]["missed_capacity"], slow["scheduling"]["missed_capacity"])
+            self.assertTrue(all(m["change_percent"] is None for m in report["metrics"].values()))
+            self.assertLess(process.stderr.index("Candidate arrivals:"), process.stderr.index("Mean request latency"))
+            (self.artifacts/"paced-compare.json").write_text(process.stdout)
+
+    def test_fixed_rate_drain_timeout_and_errors(self):
+        with RunningService() as svc:
+            drained = self.fixed_run("drain", svc, 1, 25, path="/ok?delay_ms=160")
+            self.assertGreaterEqual(drained["elapsed_seconds"], 0.15)
+            timeout = self.fixed_run("paced-timeout", svc, 5, 500, path="/ok?delay_ms=160", timeout=50, expected=3)
+            self.assertEqual(timeout["counts"]["timeouts"], 3)
+            failed = self.fixed_run("paced-http-error", svc, 5, 500, path="/ok?status=503", expected=3)
+            self.assertEqual(failed["counts"]["http_errors"], 3)
+
+    def test_fixed_rate_signals_while_idle_and_draining(self):
+        for idle, signum in ((True, signal.SIGINT), (False, signal.SIGTERM)):
+            with self.subTest(idle=idle), TimingService() as svc:
+                svc.server.processing_delay = 0 if idle else 1
+                duration = 10000 if idle else 50
+                args = self.command(svc.url + "/ok", requests=None, extra=("--rate", "1", "--duration-ms", str(duration)))
+                start = time.monotonic()
+                with subprocess.Popen(args, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE) as child:
+                    try:
+                        while not svc.server.receipts and time.monotonic() - start < 4:
+                            time.sleep(0.005)
+                        self.assertTrue(svc.server.receipts)
+                        time.sleep(0.12)
+                        sent = time.monotonic()
+                        child.send_signal(signum)
+                        stdout, stderr = child.communicate(timeout=2)
+                        self.assertLess(time.monotonic() - sent, 1.5)
+                        r = self.retain("paced-" + signum.name, args, child, stdout, stderr,
+                                        time.monotonic()-start, 128+signum)
+                        self.assertTrue(r["interrupted"])
+                        self.assertEqual(r["counts"]["cancelled"], 0 if idle else 1)
+                        self.assertEqual(r["scheduling"]["not_evaluated"], 9 if idle else 0)
+                    finally:
+                        if child.poll() is None:
+                            child.kill()
+                            child.communicate()
 
     def test_concurrency_and_reuse(self):
         for concurrency in (1, 2, 5):

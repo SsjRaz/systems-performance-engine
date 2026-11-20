@@ -71,8 +71,10 @@ class HeadersIntegration(unittest.TestCase):
             f.write(data)
         return path
 
-    def command(self, url, header_file, requests=20, concurrency=3, timeout=2000, output='-'):
-        args = [str(self.engine), url, '--requests', str(requests), '--concurrency', str(concurrency),
+    def command(self, url, header_file, requests=20, concurrency=3, timeout=2000, output='-', fixed_rate=None):
+        workload = (['--requests', str(requests)] if fixed_rate is None else
+                    ['--rate', str(fixed_rate[0]), '--duration-ms', str(fixed_rate[1])])
+        args = [str(self.engine), url, *workload, '--concurrency', str(concurrency),
                 '--timeout-ms', str(timeout), '--headers-file', str(header_file), '--json', str(output)]
         if url.startswith('https:'):
             args += ['--ca-file', str(self.certs/'root.pem')]
@@ -92,7 +94,7 @@ class HeadersIntegration(unittest.TestCase):
         exported = json.dumps(result)
         for private in (AUTH, API_KEY, str(command[command.index('--headers-file')+1])):
             self.assertNotIn(private, exported)
-        self.assertEqual(result['schema_version'], 3)
+        self.assertEqual(result['schema_version'], 4)
         self.assertEqual(result['workload']['headers'], dict(names=sorted(EXPECTED), values='redacted'))
         HttpIntegration.check_accounting(self, result)
         if output is None:
@@ -123,6 +125,16 @@ class HeadersIntegration(unittest.TestCase):
                     if secure:
                         self.assertEqual(len(service.observed()['tls_handshakes']), concurrency)
                     self.observations[-1]['server_observed'] = dict(http=state, headers=checked)
+
+    def test_fixed_rate_authenticated_https_reuses_connection(self):
+        with RunningTLS(self.certs) as service:
+            configure(service)
+            result = self.execute('paced-https', service.url+'/ok', self.private(),
+                                  fixed_rate=(5, 850), concurrency=1)
+            self.assertEqual(result['counts']['successes'], 5)
+            self.assertEqual(result['scheduling']['offered'], 5)
+            self.assertEqual(audit(service), dict(requests=5, matched=5, all_single_fields=True, methods=['GET']))
+            self.assertEqual(len(service.observed()['tls_handshakes']), 1)
 
     def test_invalid_credentials_are_http_failures_and_exports_are_private(self):
         changed = dict(EXPECTED, authorization='Bearer spe-dummy-invalid-credential')
