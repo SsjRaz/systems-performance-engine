@@ -201,6 +201,24 @@ class MixTests(unittest.TestCase):
                 (self.artifacts/'bad.json').write_text(json.dumps(bad))
                 self.compare('repeat-1', 'bad', 2)
 
+            # For this numerical check each endpoint has one 3 ms sample and the rest are 1 ms.
+            example = copy.deepcopy(good)
+            distributions = ('success_latency_ms', 'completed_latency_ms')
+            sections = [(example, 2), (example['endpoint_results'][0], 1), (example['endpoint_results'][1], 1)]
+            for section, slow_samples in sections:
+                for key in distributions:
+                    stats = section[key]
+                    stats.update(min=1, mean=1 + 2 * slow_samples / stats['samples'], p50=1, p95=3, p99=3, max=3)
+            (self.artifacts/'quantiles.json').write_text(json.dumps(example))
+            self.compare('repeat-1', 'quantiles', 0)
+            for percentile in ('p50', 'p95'):
+                bad = copy.deepcopy(example)
+                for key in distributions:
+                    bad[key][percentile] = 2  # Above both endpoint medians or below both endpoint p95s.
+                (self.artifacts/'bad.json').write_text(json.dumps(bad))
+                report = self.compare('quantiles', 'bad', 2)
+                self.assertEqual(report['metrics'], {})
+
     def test_window_drain_and_timeout(self):
         definition = self.definition('drain', (1, 3))
         with MixService() as svc:

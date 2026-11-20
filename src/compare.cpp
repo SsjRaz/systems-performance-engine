@@ -322,6 +322,21 @@ void validate_endpoints(const Json& d, const EndpointMix& mix, double elapsed, s
         }
         require(close(sum / all.at("samples").get<double>(), all.at("mean").get<double>()) &&
                 lo == all.at("min") && hi == all.at("max"), "endpoint latency summaries disagree with global observations");
+        // For nearest ranks, a pooled percentile lies between the corresponding
+        // percentiles of the nonempty endpoints. Their average need not match it.
+        for (const auto percentile : {"p50", "p95", "p99"}) {
+            double lowest = std::numeric_limits<double>::infinity(), highest = 0;
+            for (const auto& endpoint : endpoints) {
+                const auto& value = endpoint.at(name).at(percentile);
+                if (value.is_null()) continue;
+                const auto observed = value.get<double>();
+                lowest = std::min(lowest, observed);
+                highest = std::max(highest, observed);
+            }
+            const auto pooled = all.at(percentile).get<double>();
+            require(lowest <= pooled && pooled <= highest, std::string("global ") + name + " " + percentile +
+                    " is outside the endpoint percentile range");
+        }
     }
 }
 
