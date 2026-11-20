@@ -9,6 +9,7 @@ Systems Performance Engine consists of a native HTTP workload runner, a native s
 | CLI | [main.cpp](../src/main.cpp) | Arguments, process signals, output-file reservation, result writing, and exit status. |
 | Configuration | [config.cpp](../src/config.cpp), [config.hpp](../include/spe/config.hpp) | Workload limits, CLI validation, and HTTP URL parsing. |
 | Execution | [engine.cpp](../src/engine.cpp), [engine.hpp](../include/spe/engine.hpp) | Request dispatch, libcurl handle ownership, transfer completion, deadlines, and cancellation. |
+| Arrival schedule | [schedule.cpp](../src/schedule.cpp) | Computes monotonic deadlines and advances past expired arrivals in constant time and space. |
 | Measurement | [result.cpp](../src/result.cpp), [result.hpp](../include/spe/result.hpp) | Outcome counters, latency aggregation, JSON serialization, and human-readable summaries. |
 | TLS configuration | [tls.cpp](../src/tls.cpp), [tls.hpp](../include/spe/tls.hpp) | Bounded CA-bundle loading, SHA-256 identity, and recognized libcurl TLS error categories. |
 | Request headers | [headers.cpp](../src/headers.cpp), [headers.hpp](../include/spe/headers.hpp) | Private JSON input, field validation, and immutable libcurl header-list ownership. |
@@ -31,9 +32,9 @@ libcurl supplies HTTP parsing, TLS, URL handling, connection pooling, and the as
 
 `spe::run` executes on the calling thread. All HTTP handle access and measurement updates occur there. libcurl's asynchronous DNS backend may use resolver helper threads.
 
-A run allocates a fixed pool of reusable easy handles, limited to the smaller of request count and configured concurrency. A completed handle becomes available for the next request until the request budget is exhausted. This is a closed-loop model: the target's response rate controls how quickly new work is dispatched.
+A run allocates a fixed pool of reusable easy handles, limited to the smaller of request count and configured concurrency. The default closed-loop model refills slots on completion. Fixed-rate mode keeps free handles in a preallocated list. It polls until socket activity, the next arrival or window end, with a 50 ms cancellation check. A single cursor advances past expired deadlines. The scheduler admits at most the newest due arrival and drains active handles after the window closes.
 
-RAII owners release easy and multi handles on normal return or exceptions. Active handles are removed before the multi handle is destroyed. Response bodies are streamed through a discard callback with a per-request byte limit. Connection limits and sample storage are bounded by configuration; the sample arrays hold up to roughly 16 MB of latency values at the request-count cap, excluding transport and container overhead.
+RAII owners release easy and multi handles on normal return or exceptions. Active handles are removed before the multi handle is destroyed. Response bodies are streamed through a discard callback with a per-request byte limit. Connection limits and sample storage are bounded by configuration; the sample arrays hold up to roughly 16 MB of request durations plus 8 MB of dispatch delays in fixed-rate mode at the request-count cap, excluding transport and container overhead.
 
 Signal handlers set a `sig_atomic_t` flag. The event loop observes cancellation at dispatch/completion boundaries and after poll waits capped at 50 ms. Shutdown collects known completions, cancels active work, and reports the remaining undispatched budget. Server-side processing can continue after client cancellation.
 
@@ -47,27 +48,27 @@ Requests specify identity encoding. The engine reads the entire framed response 
 
 Custom GET headers are loaded before dispatch from a bounded owner-only JSON file. One RAII-owned `curl_slist` outlives all easy handles and is shared without mutation; no header configuration is allocated per logical dispatch. All values stay private to execution. Duplicates, control characters, and routing/framing/connection overrides are rejected. Empty values use libcurl's explicit empty-field syntax. See the [header reference](USAGE.md#configurable-request-headers) for limits and policy.
 
-Request bodies, additional methods, trace replay, and fixed-rate scheduling are not implemented. The native runner has no warm-up phase or fixed-duration execution window; experiment helpers run warm-up as a separate workload.
+The runner supports GET workloads with a request budget or a fixed arrival window. Experiment helpers run warm-up separately. Additional HTTP methods, request bodies and trace replay remain planned.
 
 ## Measurement contract
 
 | Measurement | Definition |
 | --- | --- |
 | Request duration | `steady_clock` time immediately before handle registration through terminal completion observation. Includes DNS, TCP/TLS establishment, certificate verification, and local event-loop overhead. |
-| Run elapsed time | First dispatch through final completion/cancellation; excludes CA preparation, handle initialization, percentile sorting, serialization, and idle connection cleanup. |
+| Run elapsed time | Closed-loop dispatch through final completion/cancellation, or the fixed arrival window plus drain. Preparation and percentile sorting occur outside the measured interval. |
 | Successful throughput | Complete 2xx responses divided by run elapsed time. |
 | Completed throughput | All terminal successes/failures divided by the same elapsed time; excludes cancellations. |
 | Successful latency | Complete 2xx samples only. |
 | Completed latency | Success, HTTP error, connection/network/TLS error, timeout, and response-limit samples. |
 | Percentiles | Exact nearest rank, computed after the measured interval. Empty distributions serialize as `null`. |
 
-Accounting preserves `requested = started + not_started` and `started = completed + cancelled`. Cancelled and undispatched requests have no latency samples.
+Accounting preserves `requested = started + not_started` and `started = completed + cancelled`. Cancelled and undispatched requests have no request-duration samples. Fixed-rate dispatch delay is sampled at handle registration for every started request, including later cancellations.
 
 Closed-loop operation does not maintain a fixed arrival rate during slowdown and does not correct coordinated omission. The engine reports client-observed duration, not isolated server processing time. Full field definitions and exit codes are in the [CLI reference](USAGE.md#measurement-and-exit-semantics).
 
 ## Result storage
 
-`RunResult` contains workload settings, terminal outcomes, HTTP status and transport-error counts, elapsed time, latency summaries, interruption state, and build/library provenance. SPE 0.3.0 exports result schema 3, retaining schema-2 TLS policy/outcomes and adding required `headers` metadata with sorted names and `values: redacted`. Header values, their hashes, and the header-file path are omitted. Custom CA bundles are identified by SHA-256; default trust-store contents are not fingerprinted. Individual native request samples are used internally and are not exported.
+`RunResult` contains workload settings, terminal outcomes, HTTP status and transport-error counts, elapsed time, latency summaries, interruption state, and build/library provenance. SPE 0.4.0 exports result schema 4. The workload identifies its model and arrival schedule. Fixed-rate results add scheduling counters, rates and dispatch delays. Closed-loop results use null scheduling fields. Both retain TLS policy/outcomes and `headers` metadata with sorted names and `values: redacted`. Header values, their hashes, and the header-file path are omitted. Custom CA bundles are identified by SHA-256; default trust-store contents are not fingerprinted. Individual native request samples are used internally and are not exported.
 
 File output is reserved with exclusive creation before traffic starts. Existing destinations are rejected; an interrupted or failed write can leave a partial new artifact.
 
@@ -75,9 +76,9 @@ File output is reserved with exclusive creation before traffic starts. Existing 
 
 `spe compare` reads regular local files with bounded size and nesting, rejects duplicate JSON keys, and validates the supported native schema and measurement contract. It checks counter equations, outcome maps, sample counts, latency bounds, throughput denominators, workload settings, and recorded engine identity before computing differences. Hosts or ports may differ only with explicit acknowledgment; endpoint paths and queries must match.
 
-Groups aggregate successful throughput from total successes and seconds, mean latency from successful sample counts, and percentile summaries from medians of per-run percentiles. Per-run ranges and sample standard deviations describe variation, not statistical certainty. Failed or incomplete groups retain diagnostic totals but suppress performance deltas. Comparison output has its own schema version 3 and `kind: spe_comparison`.
+Groups aggregate successful throughput from total successes and seconds, mean latency from successful sample counts, and percentile summaries from medians of per-run percentiles. Per-run ranges and sample standard deviations describe variation, not statistical certainty. Failed or incomplete groups retain diagnostic totals but suppress performance deltas. Comparison output has its own schema version 4 and `kind: spe_comparison`.
 
-Schema-1/SPE-0.1.0 and schema-2/SPE-0.2.0 results remain supported with implied empty custom-header metadata. Schema 1 also implies zero TLS errors and no TLS policy. Original field sets are checked before normalization. Input schema contracts cannot be mixed. HTTPS comparisons require matching verification policy and custom-bundle fingerprints. Custom-header comparisons require matching name lists plus `--allow-redacted-headers`, acknowledging unverifiable values and authorization context. Origin acknowledgement cannot override a transport, header-name or trust-policy mismatch.
+Closed-loop schema 3 remains supported. Schema-1/SPE-0.1.0 and schema-2/SPE-0.2.0 results remain supported with implied empty custom-header metadata. Schema 1 also implies zero TLS errors and no TLS policy. Original field sets are checked before normalization. Input schema contracts cannot be mixed. HTTPS comparisons require matching verification policy and custom-bundle fingerprints. Custom-header comparisons require matching name lists plus `--allow-redacted-headers`, acknowledging unverifiable values and authorization context. Origin acknowledgement cannot override a transport, header-name or trust-policy mismatch.
 
 The comparison module has no HTTP execution or application lifecycle responsibilities. It cannot verify application revisions, independent JVM blocks, overlapping runs, or environmental equivalence from native result files. Independence remains an experimental assumption; the command performs no significance test or automatic verdict. The [CLI reference](USAGE.md#compare-saved-results) defines limits and exit behavior.
 

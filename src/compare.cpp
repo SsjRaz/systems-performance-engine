@@ -42,9 +42,9 @@ void require(bool condition, const std::string& message) {
     if (!condition) throw std::invalid_argument(message);
 }
 
-void keys(const Json& object, std::initializer_list<std::string_view> names, std::string_view location) {
+void keys(const Json& object, std::initializer_list<std::string_view> names, std::string_view location, std::string_view extra = {}) {
     require(object.is_object(), std::string(location) + " must be an object");
-    require(object.size() == names.size(), std::string(location) + " has missing or unsupported fields");
+    require(object.size() == names.size() + (extra.empty() ? 0U : 1U) && (extra.empty() || object.contains(extra)), std::string(location) + " has missing or unsupported fields");
     for (auto name : names) require(object.contains(name), std::string(location) + " missing " + std::string(name));
 }
 
@@ -183,16 +183,49 @@ void latency(const Json& stats, std::uint64_t samples, double elapsed) {
     if (samples == 1) for (auto name : latency_names) require(close(get(name), get("min")), "singleton latency values disagree");
 }
 
+// The ordinary transfer counts have already been validated. Misses are a subset
+// of not_started, and never contribute request latency samples.
+std::uint64_t validate_scheduling(const Json& d, const FixedRate& rate, double elapsed, bool stopped) {
+    const auto& s = d.at("scheduling");
+    keys(s, {"offered", "missed_capacity", "missed_late", "not_evaluated", "window_seconds",
+        "offered_rps", "dispatched_rps", "dispatch_delay_ms"}, "scheduling");
+    const auto planned = rate.planned_arrivals();
+    const auto started = d.at("counts").at("started").get<std::uint64_t>();
+    const auto count = [&](const char* name) { return integer(s.at(name), name, planned); };
+    const auto offered = count("offered");
+    const auto missed = count("missed_capacity") + count("missed_late");
+    require(offered == started + missed && planned == offered + count("not_evaluated"),
+            "offered arrivals disagree with planned, dispatched or missed arrivals");
+    require(count("missed_capacity") == 0 || d.at("peak_in_flight") == d.at("workload").at("concurrency"),
+            "capacity miss without reaching the concurrency limit");
+    const double duration = static_cast<double>(rate.duration_ms) / 1000;
+    const auto window = number(s.at("window_seconds"), "window_seconds");
+    require(close(window, std::min(elapsed, duration)) && (stopped || close(window, duration)),
+            "invalid fixed-rate arrival window");
+    const auto rps = static_cast<double>(rate.per_second);
+    require(!offered || (window > 0 && static_cast<double>(offered - 1) / rps <= window + 1e-9),
+            "more arrivals offered than were due");
+    const auto per_second = [&](std::uint64_t n) { return window > 0 ? static_cast<double>(n) / window : 0; };
+    require(close(number(s.at("offered_rps"), "offered_rps"), per_second(offered)) &&
+            close(number(s.at("dispatched_rps"), "dispatched_rps"), per_second(started)),
+            "arrival rates disagree with counts / arrival window");
+    // The OS may preempt between the scheduling decision and handle registration.
+    latency(s.at("dispatch_delay_ms"), started, elapsed);
+    return missed;
+}
+
 void validate(Run& run) {
     auto& d = run.document;
+    const auto schema = integer(d.at("schema_version"), "schema_version", 4);
+    require(schema >= 1, "unsupported native result schema");
     keys(d, {"schema_version", "engine", "started_at_utc", "workload", "counts", "http_status_counts",
         "transport_error_counts", "elapsed_seconds", "completed_throughput_rps", "successful_throughput_rps",
-        "peak_in_flight", "interrupted", "engine_error", "success_latency_ms", "completed_latency_ms"}, "native result");
-    const auto schema = integer(d.at("schema_version"), "schema_version", 3);
-    require(schema >= 1 && schema <= 3, "only native schema versions 1, 2 and 3 are supported");
+        "peak_in_flight", "interrupted", "engine_error", "success_latency_ms", "completed_latency_ms"}, "native result",
+        schema == 4 ? "scheduling" : "");
     const auto& engine = d.at("engine");
     keys(engine, {"version", "source_revision", "compiler", "build_type", "build_flags", "sanitizers", "platform", "libcurl"}, "native engine metadata");
-    require(engine.at("version") == (schema == 1 ? "0.1.0" : schema == 2 ? "0.2.0" : "0.3.0"), "unsupported native engine/schema measurement contract");
+    constexpr std::array versions = {"0.1.0", "0.2.0", "0.3.0", "0.4.0"};
+    require(engine.at("version") == versions[schema - 1], "unsupported native engine/schema measurement contract");
     for (auto it = engine.begin(); it != engine.end(); ++it)
         string(it.value(), it.key(), 8192, it.key() == "source_revision" || it.key() == "build_flags");
     require(engine.at("sanitizers") == "ON" || engine.at("sanitizers") == "OFF", "unknown sanitizer setting");
@@ -214,7 +247,8 @@ void validate(Run& run) {
         w["headers"] = Json{{"names", Json::array()}, {"values", "redacted"}};
     }
     keys(w, {"url", "method", "http_version", "model", "redirects", "proxy", "connection_reuse", "warmup_requests",
-        "application_retries", "success_policy", "requests", "concurrency", "timeout_ms", "max_body_bytes", "tls", "headers"}, "workload");
+        "application_retries", "success_policy", "requests", "concurrency", "timeout_ms", "max_body_bytes", "tls", "headers"}, "workload",
+        schema == 4 ? "arrival_schedule" : "");
     const auto& headers = w.at("headers");
     keys(headers, {"names", "values"}, "header metadata");
     require(headers.at("values") == "redacted", "unsupported header-value export policy");
@@ -226,7 +260,7 @@ void validate(Run& run) {
         require(is_normalized_header_name(name) && previous < name, "header names must be allowed, lowercase, unique and sorted");
         previous = name;
     }
-    require(w.at("method") == "GET" && w.at("http_version") == "1.1" && w.at("model") == "closed_loop" &&
+    require(w.at("method") == "GET" && w.at("http_version") == "1.1" &&
         w.at("redirects").is_boolean() && w.at("redirects") == false && w.at("proxy").is_boolean() && w.at("proxy") == false &&
         w.at("connection_reuse").is_boolean() && w.at("connection_reuse") == true && w.at("success_policy") == "complete_2xx",
         "unsupported execution or success semantics");
@@ -238,6 +272,18 @@ void validate(Run& run) {
     config.concurrency = static_cast<std::size_t>(integer(w.at("concurrency"), "concurrency", max_concurrency));
     config.timeout_ms = static_cast<long>(integer(w.at("timeout_ms"), "timeout_ms", 3'600'000));
     config.max_body_bytes = static_cast<std::size_t>(integer(w.at("max_body_bytes"), "max_body_bytes", 1'073'741'824));
+    if (schema == 4 && w.at("model") == "fixed_arrival_rate") {
+        const auto& spec = w.at("arrival_schedule");
+        keys(spec, {"target_rps", "duration_ms", "overload_policy"}, "arrival schedule");
+        require(spec.at("overload_policy") == "skip_expired_drop_at_capacity", "unsupported overload policy");
+        config.fixed_rate = FixedRate{integer(spec.at("target_rps"), "target_rps", max_requests),
+                                      integer(spec.at("duration_ms"), "duration_ms", 3'600'000)};
+        require(config.request_budget() == config.requests, "planned arrivals disagree with rate and duration");
+    } else {
+        require(w.at("model") == "closed_loop", "unsupported workload model");
+        require(schema != 4 || (d.at("scheduling").is_null() && w.at("arrival_schedule").is_null()),
+                "closed-loop workloads cannot carry arrival data");
+    }
     validate_config(config);
     const bool https = is_https_url(config.url);
     require(schema != 1 || !https, "legacy SPE results cannot describe HTTPS measurements");
@@ -276,7 +322,9 @@ void validate(Run& run) {
     require(d.at("interrupted").is_boolean(), "interrupted must be boolean");
     const auto& error = d.at("engine_error");
     if (!error.is_null()) string(error, "engine_error", 65536);
-    const bool incomplete = count("cancelled") != 0 || count("not_started") != 0;
+    const bool stopped = d.at("interrupted") == true || !error.is_null();
+    const auto missed = config.fixed_rate ? validate_scheduling(d, *config.fixed_rate, elapsed, stopped) : 0;
+    const bool incomplete = count("cancelled") != 0 || count("not_started") != missed;
     require(!incomplete || d.at("interrupted") == true || !error.is_null(), "incomplete run has no interruption or engine error");
     latency(d.at("success_latency_ms"), count("successes"), elapsed);
     latency(d.at("completed_latency_ms"), count("completed"), elapsed);
@@ -323,7 +371,9 @@ void validate(Run& run) {
     require(transport_total <= failures - count("http_errors"), "transport error counts exceed failed transfers");
     require(tls_total == count("tls_errors"), "TLS error codes disagree with TLS outcomes");
     run.clean = !incomplete && d.at("interrupted") == false && error.is_null() && count("successes") == config.requests;
-    run.state = run.clean ? "complete_success" : incomplete || d.at("interrupted") == true || !error.is_null() ? "incomplete_or_interrupted" : "completed_with_failures";
+    if (incomplete || stopped) run.state = "incomplete_or_interrupted";
+    else if (missed) run.state = "missed_arrivals";
+    else run.state = run.clean ? "complete_success" : "completed_with_failures";
 }
 
 double median(std::vector<double> values) {
@@ -352,6 +402,7 @@ Json group(const std::vector<Run>& runs) {
     Json counts = Json::object(); for (auto name : count_names) counts[name] = std::uint64_t{0};
     Json inputs = Json::array();
     double elapsed = 0, latency_sum = 0;
+    std::uint64_t missed_capacity = 0, missed_late = 0, not_evaluated = 0;
     bool clean = true;
     std::vector<double> throughput, means, p50, p95, p99;
     for (const auto& run : runs) {
@@ -369,6 +420,13 @@ Json group(const std::vector<Run>& runs) {
             {"url", d.at("workload").at("url")}, {"counts", d.at("counts")}, {"engine_error", d.at("engine_error")},
             {"transport_error_counts", d.at("transport_error_counts")},
             {"elapsed_seconds", d.at("elapsed_seconds")}, {"success_latency_ms", d.at("success_latency_ms")}});
+        if (d.at("workload").at("model") == "fixed_arrival_rate") {
+            const auto& s = d.at("scheduling");
+            inputs.back()["scheduling"] = s;
+            missed_capacity += s.at("missed_capacity").get<std::uint64_t>();
+            missed_late += s.at("missed_late").get<std::uint64_t>();
+            not_evaluated += s.at("not_evaluated").get<std::uint64_t>();
+        }
     }
     const auto successes = counts.at("successes").get<std::uint64_t>();
     const auto completed = counts.at("completed").get<std::uint64_t>();
@@ -377,12 +435,17 @@ Json group(const std::vector<Run>& runs) {
         {"median_run_p50_ms", p50.empty() ? Json(nullptr) : Json(median(p50))},
         {"median_run_p95_ms", p95.empty() ? Json(nullptr) : Json(median(p95))},
         {"median_run_p99_ms", p99.empty() ? Json(nullptr) : Json(median(p99))}};
-    return Json{{"runs", runs.size()}, {"eligible_for_performance_deltas", clean}, {"counts", counts},
+    Json result{{"runs", runs.size()}, {"eligible_for_performance_deltas", clean}, {"counts", counts},
         {"completed_errors", completed - successes},
         {"completed_error_rate_percent", completed ? Json(100 * static_cast<double>(completed - successes) / static_cast<double>(completed)) : Json(nullptr)},
         {"elapsed_seconds", elapsed}, {"metrics", metrics},
         {"run_variability", {{"successful_throughput_rps", spread(throughput)}, {"mean_request_latency_ms", spread(means)},
             {"p50_ms", spread(p50)}, {"p95_ms", spread(p95)}, {"p99_ms", spread(p99)}}}, {"inputs", inputs}};
+    if (runs.front().document.at("workload").at("model") == "fixed_arrival_rate") {
+        result["arrivals"] = {{"planned", counts.at("requested")}, {"dispatched", counts.at("started")},
+            {"missed_capacity", missed_capacity}, {"missed_late", missed_late}, {"not_evaluated", not_evaluated}};
+    }
+    return result;
 }
 
 std::string display(const Json& value, unsigned precision = 3) {
@@ -404,6 +467,16 @@ ComparisonReport render(Json report, ComparisonStatus status) {
         const auto& a = report.at("baseline"); const auto& b = report.at("candidate");
         text << "Input checks: PASS (schema, accounting, measurements, workload and engine build).\n";
         text << "Runs: baseline=" << a.at("runs") << " candidate=" << b.at("runs") << '\n';
+        if (a.contains("arrivals")) {
+            const auto show_arrivals = [&](const char* label, const Json& group) {
+                const auto& arr = group.at("arrivals");
+                text << label << " arrivals: planned=" << arr.at("planned") << " dispatched=" << arr.at("dispatched")
+                     << " missed_capacity=" << arr.at("missed_capacity") << " missed_late=" << arr.at("missed_late")
+                     << " not_evaluated=" << arr.at("not_evaluated") << '\n';
+            };
+            show_arrivals("Baseline", a);
+            show_arrivals("Candidate", b);
+        }
         text << std::left << std::setw(32) << "Metric" << std::right << std::setw(16) << "Baseline" << std::setw(16) << "Candidate" << std::setw(14) << "Change" << '\n';
         for (const auto& [name, label] : {std::pair{"successful_throughput_rps", "Successful throughput (req/s)"},
                  std::pair{"mean_request_latency_ms", "Mean request latency (ms)"}, std::pair{"median_run_p50_ms", "Median run p50 (ms)"},
@@ -415,7 +488,7 @@ ComparisonReport render(Json report, ComparisonStatus status) {
                     (delta.get<double>() >= 0 ? "+" : "") + display(delta, 2) + "%") << '\n';
         }
         text << "Completed errors: baseline=" << a.at("completed_errors") << " candidate=" << b.at("completed_errors") << '\n';
-        for (const auto& [label, g] : {std::pair{"baseline", a}, std::pair{"candidate", b}}) {
+        const auto show_group = [&](const char* label, const Json& g) {
             const auto& c = g.at("counts");
             text << label << " requests (totals): requested=" << c.at("requested") << " completed=" << c.at("completed")
                  << " successful=" << c.at("successes") << " completed_error_rate=" << display(g.at("completed_error_rate_percent"), 2)
@@ -431,9 +504,11 @@ ComparisonReport render(Json report, ComparisonStatus status) {
             }
             for (const auto& input : g.at("inputs")) if (input.at("state") != "complete_success")
                 text << label << " " << input.at("path").dump(-1, ' ', true, Json::error_handler_t::replace) << ": " << input.at("state").get<std::string>() << '\n';
-        }
+        };
+        show_group("baseline", a);
+        show_group("candidate", b);
         if (status == ComparisonStatus::insufficient_evidence)
-            text << "Insufficient evidence: failed, incomplete, or interrupted runs; performance deltas suppressed. Absolute values are diagnostics.\n";
+            text << "Insufficient evidence: failed, incomplete, interrupted runs or missed arrivals; performance deltas suppressed. Absolute values are diagnostics.\n";
         text << "Direction: higher successful throughput; lower successful-request latency (under comparable conditions).\n"
              << "Throughput = total successes / total measured seconds; mean latency is weighted by successful samples.\n"
              << "p50/p95/p99 summaries are medians of per-run percentiles, not pooled request percentiles.\n";
@@ -489,7 +564,7 @@ std::string_view compare_usage() {
            "  --allow-origin-change  Acknowledge different hosts/ports; encoded path/query must still match\n"
            "  --allow-redacted-headers  Acknowledge unverifiable header values; recorded names must still match\n"
            "  --help, -h             Show comparison help\n"
-           "Native SPE 0.1.0/schema 1, 0.2.0/schema 2 and 0.3.0/schema 3 inputs; contracts cannot be mixed. No traffic or statistical verdicts.\n"
+           "Native SPE 0.1.0/schema 1, 0.2.0/schema 2, 0.3.0/schema 3 and 0.4.0/schema 4 inputs; contracts cannot be mixed. No traffic or statistical verdicts.\n"
            "Limits: 100 files/group, 1 MiB/file, 32 MiB total, 32 JSON nesting levels.\n"
            "Exit: 0 descriptive comparison; 3 insufficient complete-success evidence; 2 rejected input; 1 output/system error.\n";
 }
@@ -499,7 +574,7 @@ int comparison_exit_code(ComparisonStatus status) {
 }
 
 ComparisonReport compare_saved_results(const CompareOptions& options) {
-    Json report{{"schema_version", 3}, {"kind", "spe_comparison"}, {"statistical_verdict", "not_assessed"},
+    Json report{{"schema_version", 4}, {"kind", "spe_comparison"}, {"statistical_verdict", "not_assessed"},
         {"status", "rejected"}, {"checks", Json::array()}, {"metrics", Json::object()}};
     std::string context = "inputs";
     try {

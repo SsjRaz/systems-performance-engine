@@ -99,7 +99,7 @@ class ComparisonTests(unittest.TestCase):
     def compare(self, a, b, *, expected=0, extra=()):
         process = self.command(["compare", a, b, *extra, "--json", "-"], expected)
         report = json.loads(process.stdout, parse_constant=lambda value: self.fail(f"nonfinite output {value}"))
-        self.assertEqual(report["schema_version"], 3)
+        self.assertEqual(report["schema_version"], 4)
         self.assertEqual(report["kind"], "spe_comparison")
         self.assertEqual(report["statistical_verdict"], "not_assessed")
         self.assertIn("Statistical verdict: NOT ASSESSED.", process.stderr)
@@ -200,6 +200,49 @@ class ComparisonTests(unittest.TestCase):
         legacy = numerical_fixture()
         legacy["workload"]["url"] = legacy["workload"]["url"].replace("http://", "https://")
         self.compare(self.save(legacy), self.save(legacy), expected=2)
+
+    def test_fixed_rate_contract_and_rejections(self):
+        closed = header_fixture()
+        closed.update(schema_version=4, scheduling=None)
+        closed["workload"]["arrival_schedule"] = None
+        closed["engine"]["version"] = "0.4.0"
+        self.compare(self.save(closed), self.save(closed))
+        self.compare(self.save(header_fixture()), self.save(closed), expected=2)
+
+        def fixed(rate, duration):
+            run = copy.deepcopy(closed)
+            run["workload"].update(model="fixed_arrival_rate", arrival_schedule=dict(
+                target_rps=rate, duration_ms=duration, overload_policy="skip_expired_drop_at_capacity"))
+            run["scheduling"] = dict(offered=100, missed_capacity=0, missed_late=0, not_evaluated=0,
+                window_seconds=duration / 1000, offered_rps=100000/duration, dispatched_rps=100000/duration,
+                dispatch_delay_ms=dict(samples=100, min=0, mean=0, p50=0, p95=0, p99=0, max=0))
+            return run
+        good = fixed(10, 10000)
+        a = self.save(good)
+        report, _ = self.compare(a, self.save(good))
+        self.assertEqual(report["baseline"]["arrivals"]["dispatched"], 100)
+        preempted = copy.deepcopy(good)
+        preempted["scheduling"]["dispatch_delay_ms"].update(mean=1.1, max=110)
+        self.compare(a, self.save(preempted))
+        self.compare(a, self.save(closed), expected=2)
+        self.compare(a, self.save(fixed(20, 5000)), expected=2)
+        for field, value in (("not_evaluated", 1), ("missed_late", 1), ("offered", 99), ("offered_rps", 0),
+                             ("window_seconds", 5), ("dispatched_rps", 1), ("missed_capacity", -1)):
+            bad = copy.deepcopy(good)
+            bad["scheduling"][field] = value
+            self.compare(a, self.save(bad), expected=2)
+        for field, value in (("target_rps", 0), ("duration_ms", 4000000), ("target_rps", 1000000),
+                             ("overload_policy", "queue"), ("duration_ms", 100)):
+            bad = copy.deepcopy(good)
+            bad["workload"]["arrival_schedule"][field] = value
+            self.compare(a, self.save(bad), expected=2)
+        for field, value in (("samples", 99), ("p95", 300)):
+            bad = copy.deepcopy(good)
+            bad["scheduling"]["dispatch_delay_ms"][field] = value
+            self.compare(a, self.save(bad), expected=2)
+        bad = copy.deepcopy(closed)
+        bad["scheduling"] = good["scheduling"]
+        self.compare(self.save(bad), self.save(closed), expected=2)
 
     def test_redacted_headers_require_explicit_acknowledgement(self):
         a, b = self.save(header_fixture(["accept", "authorization"])), self.save(header_fixture(["accept", "authorization"]))

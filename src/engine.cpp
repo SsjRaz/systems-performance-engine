@@ -1,4 +1,5 @@
 #include "spe/engine.hpp"
+#include "spe/schedule.hpp"
 #include "spe/tls.hpp"
 #include "spe/headers.hpp"
 
@@ -111,7 +112,8 @@ RunResult run(const Config& config, const std::function<bool()>& stop_requested)
     auto headers = config.headers_file.empty() ? PreparedHeaders{} : load_headers_file(config.headers_file);
     curl_blob ca_blob{ca_bundle.bytes.data(), ca_bundle.bytes.size(), CURL_BLOB_NOCOPY};
     const auto user_agent = std::string("systems-performance-engine/") + std::string(version());
-    const auto limit = std::min(config.concurrency, static_cast<std::size_t>(config.requests));
+    const auto budget = config.request_budget();
+    const auto limit = std::min(config.concurrency, static_cast<std::size_t>(budget));
     std::vector<std::unique_ptr<Slot>> slots;
     slots.reserve(limit);
     for (std::size_t i = 0; i < limit; ++i) {
@@ -165,55 +167,95 @@ RunResult run(const Config& config, const std::function<bool()>& stop_requested)
     bool interrupted = false;
     std::string engine_error;
     const auto stopped = [&] { return stop_requested && stop_requested(); };
+    std::optional<ArrivalSchedule> schedule;
+    if (config.fixed_rate) {
+        schedule.emplace(*config.fixed_rate);
+        for (const auto& slot : slots) ready.push_back(slot.get());
+    }
     const auto begin = Clock::now();
-    const auto start = [&](Slot& slot) {
+    const auto start = [&](Slot& slot, std::optional<ArrivalSchedule::Offset> deadline = {}) {
         slot.body_bytes = 0;
         slot.body_limit_hit = false;
         slot.started = Clock::now();
         check(curl_multi_add_handle(multi.get(), slot.easy.get()));
         slot.active = true;
-        measurements.start();
+        std::optional<double> delay_ms;
+        if (deadline) {
+            delay_ms = std::chrono::duration<double, std::milli>((slot.started - begin) - *deadline).count();
+        }
+        measurements.start(delay_ms);
         ++in_flight;
         peak = std::max(peak, in_flight);
     };
-    try {
-        for (const auto& slot : slots) {
-            if (stopped()) break;
-            start(*slot);
+    const auto perform = [&] {
+        int running = 0;
+        check(curl_multi_perform(multi.get(), &running));
+        int remaining = 0;
+        // Drain the entire completion batch before reusing any handle.
+        while (auto* message = curl_multi_info_read(multi.get(), &remaining)) {
+            if (message->msg != CURLMSG_DONE) continue;
+            char* context = nullptr;
+            check(curl_easy_getinfo(message->easy_handle, CURLINFO_PRIVATE, &context));
+            auto& slot = *reinterpret_cast<Slot*>(context);
+            const auto duration = std::chrono::duration<double, std::milli>(Clock::now() - slot.started).count();
+            const auto code = message->data.result;
+            long status = 0;
+            check(curl_easy_getinfo(message->easy_handle, CURLINFO_RESPONSE_CODE, &status));
+            check(curl_multi_remove_handle(multi.get(), message->easy_handle));
+            measurements.record(classify(code, status, slot.body_limit_hit), duration, status, static_cast<int>(code));
+            slot.active = false;
+            --in_flight;
+            ready.push_back(&slot);
         }
-        while (in_flight != 0) {
-            int running = 0;
-            check(curl_multi_perform(multi.get(), &running));
-            int remaining = 0;
-            // Drain the entire completion batch before reusing any handle.
-            ready.clear();
-            while (auto* message = curl_multi_info_read(multi.get(), &remaining)) {
-                if (message->msg != CURLMSG_DONE) continue;
-                char* context = nullptr;
-                check(curl_easy_getinfo(message->easy_handle, CURLINFO_PRIVATE, &context));
-                auto& slot = *reinterpret_cast<Slot*>(context);
-                const auto duration = std::chrono::duration<double, std::milli>(Clock::now() - slot.started).count();
-                const auto code = message->data.result;
-                long status = 0;
-                check(curl_easy_getinfo(message->easy_handle, CURLINFO_RESPONSE_CODE, &status));
-                check(curl_multi_remove_handle(multi.get(), message->easy_handle));
-                measurements.record(classify(code, status, slot.body_limit_hit), duration, status, static_cast<int>(code));
-                slot.active = false;
-                --in_flight;
-                ready.push_back(&slot);
+    };
+
+    try {
+        if (schedule) {
+            for (;;) {
+                if (in_flight != 0) perform();
+                if (stopped()) { interrupted = true; break; }
+
+                const auto now = Clock::now();
+                const auto elapsed = std::chrono::duration_cast<ArrivalSchedule::Offset>(now - begin);
+                const auto due = schedule->advance(elapsed, !ready.empty());
+                measurements.miss_arrivals(due.expired, due.at_capacity);
+                if (due.dispatch) {
+                    start(*ready.back(), due.dispatch);
+                    ready.pop_back();
+                    continue; // Drive newly registered work before blocking on sockets.
+                }
+
+                int wait_ms = 50;
+                if (elapsed < schedule->window()) {
+                    const auto wait = std::chrono::ceil<std::chrono::milliseconds>(schedule->next_wake() - elapsed);
+                    wait_ms = static_cast<int>(std::min(wait, std::chrono::milliseconds(50)).count());
+                } else if (in_flight == 0) {
+                    break; // All arrivals accounted for; all dispatched transfers drained.
+                }
+                // curl_multi_poll also sleeps when the idle service has no descriptors.
+                check(curl_multi_poll(multi.get(), nullptr, 0, wait_ms, nullptr));
             }
-            if (stopped()) { interrupted = true; break; }
-            for (auto* slot : ready) {
-                if (measurements.counters().started == config.requests || stopped()) break;
+        } else {
+            for (const auto& slot : slots) {
+                if (stopped()) break;
                 start(*slot);
             }
-            if (stopped()) { interrupted = true; break; }
-            if (in_flight != 0) {
-                // Also bounds signal observation latency when all sockets are idle.
-                check(curl_multi_poll(multi.get(), nullptr, 0, 50, nullptr));
+            while (in_flight != 0) {
+                ready.clear();
+                perform();
+                if (stopped()) { interrupted = true; break; }
+                for (auto* slot : ready) {
+                    if (measurements.counters().started == budget || stopped()) break;
+                    start(*slot);
+                }
+                if (stopped()) { interrupted = true; break; }
+                if (in_flight != 0) {
+                    // Also bounds signal observation latency when all sockets are idle.
+                    check(curl_multi_poll(multi.get(), nullptr, 0, 50, nullptr));
+                }
             }
+            interrupted = interrupted || (stopped() && measurements.counters().started < budget);
         }
-        interrupted = interrupted || (stopped() && measurements.counters().started < config.requests);
     } catch (const std::exception& error) {
         engine_error = error.what();
     }
