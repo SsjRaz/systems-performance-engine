@@ -11,6 +11,7 @@ class ArrivalSchedule {
 public:
     using Offset = std::chrono::nanoseconds;
     struct Decision {
+        std::uint64_t first = 0; // First ordinal evaluated in this batch.
         std::uint64_t expired = 0;
         bool at_capacity = false;
         std::optional<Offset> dispatch;

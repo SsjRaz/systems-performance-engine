@@ -51,10 +51,19 @@ struct SchedulingStats {
     LatencySummary dispatch_delay_ms;
 };
 
+struct EndpointResult {
+    Counters counters;
+    std::uint64_t missed_late = 0;
+    std::uint64_t missed_capacity = 0;
+    LatencySummary success_latency_ms;
+    LatencySummary completed_latency_ms;
+};
+
 struct RunResult {
     Config config;
     Counters counters;
     SchedulingStats scheduling;
+    std::vector<EndpointResult> endpoints;
     LatencySummary success_latency_ms;
     LatencySummary completed_latency_ms;
     std::array<std::uint64_t, 600> http_status_counts{};
@@ -74,9 +83,9 @@ struct RunResult {
 class Measurements {
 public:
     explicit Measurements(const Config& config, std::string ca_bundle_sha256 = {}, std::vector<std::string> header_names = {});
-    void start(std::optional<double> dispatch_delay_ms = {});
-    void miss_arrivals(std::uint64_t expired, bool at_capacity);
-    void record(Outcome outcome, double duration_ms, long http_status = 0, int transport_error = 0);
+    void start(std::optional<double> dispatch_delay_ms = {}, std::size_t endpoint = 0);
+    void miss_arrivals(std::uint64_t expired, bool at_capacity, std::uint64_t first = 0);
+    void record(Outcome outcome, double duration_ms, long http_status = 0, int transport_error = 0, std::size_t endpoint = 0);
     const Counters& counters() const { return result_.counters; }
     RunResult finish(double elapsed_seconds, std::size_t peak_in_flight,
                      bool interrupted, std::string engine_error = {});
@@ -84,8 +93,14 @@ public:
 private:
     std::uint64_t remaining_arrivals() const;
     RunResult result_;
-    std::vector<double> successful_;
-    std::vector<double> completed_;
+    struct Samples {
+        std::vector<double> successful;
+        std::vector<double> completed;
+        void reserve(std::size_t count);
+        void record(Counters& counts, Outcome outcome, double duration_ms);
+    };
+    Samples global_samples_;
+    std::vector<Samples> endpoint_samples_;
     std::vector<double> dispatch_delays_;
 };
 

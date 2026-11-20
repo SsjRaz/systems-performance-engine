@@ -87,6 +87,17 @@ void validate_config(const Config& config) {
     if (config.url.find('#') != std::string::npos || url_part(url.get(), CURLUPART_PORT) == "0") {
         throw std::invalid_argument("URL fragments and port zero are not supported");
     }
+    if (config.mix) {
+        if (!config.fixed_rate) throw std::invalid_argument("endpoint mixes require --rate and --duration-ms");
+        std::string_view origin = config.url;
+        if (origin.ends_with('/')) origin.remove_suffix(1);
+        const auto scheme_end = origin.find("://");
+        if (scheme_end == origin.npos || scheme_end + 3 >= origin.size() ||
+            origin.substr(scheme_end + 3).find_first_of("/\\?#@") != origin.npos)
+            throw std::invalid_argument("an endpoint mix requires an HTTP(S) origin with no path, query or credentials");
+        for (const auto& endpoint : config.mix->endpoints())
+            if (origin.size() + endpoint.path.size() > 8192) throw std::invalid_argument("endpoint URL exceeds 8192 bytes");
+    }
     if (config.ca_file.size() > 4096 || config.ca_file.find('\0') != std::string::npos)
         throw std::invalid_argument("invalid CA certificate file path");
     if (!config.ca_file.empty() && scheme != "https")
@@ -99,6 +110,7 @@ CliOptions parse_cli(std::span<const std::string_view> arguments) {
     CliOptions options;
     std::set<std::string_view> seen;
     FixedRate rate{};
+    std::string workload_file;
     for (std::size_t i = 0; i < arguments.size(); ++i) {
         const auto arg = arguments[i];
         if (arg == "--help" || arg == "-h") {
@@ -107,7 +119,7 @@ CliOptions parse_cli(std::span<const std::string_view> arguments) {
             options.version = true;
         } else if (arg.starts_with('-')) {
             if (arg != "--requests" && arg != "--rate" && arg != "--duration-ms" && arg != "--concurrency" && arg != "--timeout-ms" &&
-                arg != "--max-body-bytes" && arg != "--json" && arg != "--ca-file" && arg != "--headers-file") {
+                arg != "--max-body-bytes" && arg != "--json" && arg != "--ca-file" && arg != "--headers-file" && arg != "--workload-file") {
                 throw std::invalid_argument("unknown option: " + std::string(arg));
             }
             if (!seen.insert(arg).second) {
@@ -117,6 +129,12 @@ CliOptions parse_cli(std::span<const std::string_view> arguments) {
                 throw std::invalid_argument("missing value for " + std::string(arg));
             }
             const auto value = arguments[i];
+            if (arg == "--workload-file") {
+                if (value.empty() || value.starts_with('-') || value.size() > 4096 || value.find('\0') != value.npos)
+                    throw std::invalid_argument("--workload-file requires a configuration file path");
+                workload_file = value;
+                continue;
+            }
             if (arg == "--headers-file") {
                 if (value.empty() || value.starts_with('-')) throw std::invalid_argument("--headers-file requires a configuration file path");
                 options.config.headers_file = value;
@@ -157,7 +175,10 @@ CliOptions parse_cli(std::span<const std::string_view> arguments) {
             throw std::invalid_argument("use --rate and --duration-ms together, without --requests");
         options.config.fixed_rate = rate;
     }
-    if (!options.help && !options.version) validate_config(options.config);
+    if (!options.help && !options.version) {
+        if (!workload_file.empty()) options.config.mix = load_workload_file(workload_file);
+        validate_config(options.config);
+    }
     return options;
 }
 
@@ -166,6 +187,7 @@ std::string_view usage() {
            "  --requests N        Total logical requests, 1..1000000 (default 1000)\n"
            "  --rate N            Fixed arrivals/second (positive integer); requires --duration-ms instead of --requests\n"
            "  --duration-ms N     Arrival window, 1..3600000 ms; at most 1000000 planned arrivals\n"
+           "  --workload-file PATH  Two weighted endpoint paths (JSON); requires a target origin and fixed rate\n"
            "  --concurrency N     Maximum in-flight requests, 1..1024 (default 10)\n"
            "  --timeout-ms N      Total per-request timeout, 1..3600000 (default 1000)\n"
            "  --max-body-bytes N  Response body limit, 1..1073741824 (default 16777216)\n"

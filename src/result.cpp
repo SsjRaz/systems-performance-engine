@@ -38,6 +38,19 @@ void quoted(std::ostream& out, std::string_view value) {
     out << '"';
 }
 
+double throughput(std::uint64_t count, double elapsed_seconds) {
+    return elapsed_seconds > 0 ? static_cast<double>(count) / elapsed_seconds : 0;
+}
+
+void counts_json(std::ostream& out, const Counters& c) {
+    out << "{\"requested\":" << c.requested << ",\"started\":" << c.started
+        << ",\"completed\":" << c.completed << ",\"successes\":" << c.successes
+        << ",\"http_errors\":" << c.http_errors << ",\"connection_errors\":" << c.connection_errors
+        << ",\"network_errors\":" << c.network_errors << ",\"tls_errors\":" << c.tls_errors << ",\"timeouts\":" << c.timeouts
+        << ",\"response_limit_errors\":" << c.response_limit_errors << ",\"cancelled\":" << c.cancelled
+        << ",\"not_started\":" << c.not_started << '}';
+}
+
 void latency_json(std::ostream& out, const LatencySummary& stats) {
     out << "{\"samples\":" << stats.samples;
     const auto field = [&](std::string_view name, double value) {
@@ -101,8 +114,16 @@ Measurements::Measurements(const Config& config, std::string ca_bundle_sha256, s
     const auto budget = static_cast<std::size_t>(config.request_budget());
     result_.counters.requested = budget;
     result_.started_at_utc = utc_timestamp();
-    successful_.reserve(budget);
-    completed_.reserve(budget);
+    global_samples_.reserve(budget);
+    if (config.mix) {
+        result_.endpoints.resize(config.mix->size);
+        endpoint_samples_.resize(config.mix->size);
+        for (std::size_t i = 0; i < result_.endpoints.size(); ++i) {
+            const auto planned = config.mix->count_before(i, budget);
+            result_.endpoints[i].counters.requested = planned;
+            endpoint_samples_[i].reserve(static_cast<std::size_t>(planned));
+        }
+    }
     if (config.fixed_rate) dispatch_delays_.reserve(budget);
 }
 
@@ -111,35 +132,49 @@ std::uint64_t Measurements::remaining_arrivals() const {
     return c.requested - c.started - result_.scheduling.missed_late - result_.scheduling.missed_capacity;
 }
 
-void Measurements::start(std::optional<double> dispatch_delay_ms) {
+void Measurements::start(std::optional<double> dispatch_delay_ms, std::size_t endpoint) {
     if (result_.config.fixed_rate.has_value() != dispatch_delay_ms.has_value())
         throw std::logic_error("dispatch timing must match the workload model");
     if (remaining_arrivals() == 0) {
         throw std::logic_error("request count exceeded");
+    }
+    if (!result_.endpoints.empty()) {
+        const auto& e = result_.endpoints.at(endpoint);
+        if (e.counters.started + e.missed_capacity + e.missed_late >= e.counters.requested)
+            throw std::logic_error("endpoint request budget exhausted");
     }
     if (dispatch_delay_ms) {
         if (!std::isfinite(*dispatch_delay_ms) || *dispatch_delay_ms < 0)
             throw std::logic_error("invalid dispatch delay");
         dispatch_delays_.push_back(*dispatch_delay_ms);
     }
+    if (!result_.endpoints.empty()) ++result_.endpoints.at(endpoint).counters.started;
     ++result_.counters.started;
 }
 
-void Measurements::miss_arrivals(std::uint64_t expired, bool at_capacity) {
+void Measurements::miss_arrivals(std::uint64_t expired, bool at_capacity, std::uint64_t first) {
     const auto remaining = remaining_arrivals();
     if (!result_.config.fixed_rate || expired > remaining || (at_capacity && expired == remaining))
         throw std::logic_error("invalid missed arrival count");
+    if (const auto& mix = result_.config.mix; mix && (expired || at_capacity)) {
+        if (first != result_.counters.requested - remaining) throw std::logic_error("non-contiguous arrival range");
+        const auto end = first + expired;
+        for (std::size_t i = 0; i < result_.endpoints.size(); ++i)
+            result_.endpoints[i].missed_late += mix->count_before(i, end) - mix->count_before(i, first);
+        if (at_capacity) ++result_.endpoints[mix->endpoint_at(end)].missed_capacity;
+    }
     result_.scheduling.missed_late += expired;
     if (at_capacity) ++result_.scheduling.missed_capacity;
 }
 
-void Measurements::record(Outcome outcome, double duration_ms, long http_status, int transport_error) {
-    auto& c = result_.counters;
-    if (c.completed + c.cancelled >= c.started) throw std::logic_error("no started request to complete");
-    if (!std::isfinite(duration_ms) || duration_ms < 0) throw std::invalid_argument("invalid request duration");
-    if (transport_error != 0) ++result_.transport_error_counts[transport_error];
+void Measurements::Samples::reserve(std::size_t count) {
+    successful.reserve(count);
+    completed.reserve(count);
+}
+
+void Measurements::Samples::record(Counters& c, Outcome outcome, double duration_ms) {
     switch (outcome) {
-    case Outcome::success: ++c.successes; successful_.push_back(duration_ms); break;
+    case Outcome::success: ++c.successes; successful.push_back(duration_ms); break;
     case Outcome::http_error: ++c.http_errors; break;
     case Outcome::connection_error: ++c.connection_errors; break;
     case Outcome::network_error: ++c.network_errors; break;
@@ -149,7 +184,21 @@ void Measurements::record(Outcome outcome, double duration_ms, long http_status,
     case Outcome::cancelled: ++c.cancelled; return;
     }
     ++c.completed;
-    completed_.push_back(duration_ms);
+    completed.push_back(duration_ms);
+}
+
+void Measurements::record(Outcome outcome, double duration_ms, long http_status, int transport_error, std::size_t endpoint) {
+    if (!result_.endpoints.empty()) {
+        const auto& local = result_.endpoints.at(endpoint).counters;
+        if (local.completed + local.cancelled >= local.started) throw std::logic_error("no active request for endpoint");
+    }
+    auto& c = result_.counters;
+    if (c.completed + c.cancelled >= c.started) throw std::logic_error("no started request to complete");
+    if (!std::isfinite(duration_ms) || duration_ms < 0) throw std::invalid_argument("invalid request duration");
+    if (transport_error != 0) ++result_.transport_error_counts[transport_error];
+    global_samples_.record(c, outcome, duration_ms);
+    if (!result_.endpoints.empty())
+        endpoint_samples_[endpoint].record(result_.endpoints[endpoint].counters, outcome, duration_ms);
     if (http_status >= 100 && http_status < 600 &&
         (outcome == Outcome::success || outcome == Outcome::http_error)) {
         ++result_.http_status_counts[static_cast<std::size_t>(http_status)];
@@ -182,8 +231,17 @@ RunResult Measurements::finish(double elapsed_seconds, std::size_t peak_in_fligh
     result_.peak_in_flight = peak_in_flight;
     result_.interrupted = interrupted;
     result_.engine_error = std::move(engine_error);
-    result_.success_latency_ms = summarize_latencies(std::move(successful_));
-    result_.completed_latency_ms = summarize_latencies(std::move(completed_));
+    for (std::size_t i = 0; i < result_.endpoints.size(); ++i) {
+        auto& e = result_.endpoints[i];
+        e.counters.not_started = e.counters.requested - e.counters.started;
+        const auto offered = e.counters.started + e.missed_late + e.missed_capacity;
+        if (!e.counters.valid() || offered != result_.config.mix->count_before(i, result_.scheduling.offered))
+            throw std::logic_error("endpoint arrival accounting invariant violated");
+        e.success_latency_ms = summarize_latencies(std::move(endpoint_samples_[i].successful));
+        e.completed_latency_ms = summarize_latencies(std::move(endpoint_samples_[i].completed));
+    }
+    result_.success_latency_ms = summarize_latencies(std::move(global_samples_.successful));
+    result_.completed_latency_ms = summarize_latencies(std::move(global_samples_.completed));
     return std::move(result_);
 }
 
@@ -192,7 +250,7 @@ std::string_view version() { return build_info::version; }
 void write_json(std::ostream& out, const RunResult& r) {
     out.imbue(std::locale::classic());
     out << std::defaultfloat << std::setprecision(17);
-    out << "{\n  \"schema_version\":4,\n  \"engine\":{\"version\":";
+    out << "{\n  \"schema_version\":5,\n  \"engine\":{\"version\":";
     quoted(out, version());
     out << ",\"source_revision\":"; quoted(out, build_info::revision);
     out << ",\"compiler\":"; quoted(out, build_info::compiler);
@@ -209,6 +267,18 @@ void write_json(std::ostream& out, const RunResult& r) {
     if (const auto rate = r.config.fixed_rate) {
         out << "{\"target_rps\":" << rate->per_second << ",\"duration_ms\":" << rate->duration_ms
             << ",\"overload_policy\":\"skip_expired_drop_at_capacity\"}";
+    } else out << "null";
+    out << ",\"endpoint_mix\":";
+    if (const auto& mix = r.config.mix) {
+        out << "{\"assignment\":"; quoted(out, EndpointMix::assignment);
+        out << ",\"endpoints\":[";
+        for (std::size_t i = 0; i < mix->size; ++i) {
+            if (i) out << ',';
+            const auto& e = mix->endpoints()[i];
+            out << "{\"path\":"; quoted(out, e.path);
+            out << ",\"weight\":" << e.weight << '}';
+        }
+        out << "]}";
     } else out << "null";
     out << ",\"redirects\":false,\"proxy\":false,\"connection_reuse\":true,\"warmup_requests\":0,"
            "\"application_retries\":0,\"success_policy\":\"complete_2xx\",\"requests\":" << r.counters.requested
@@ -240,12 +310,28 @@ void write_json(std::ostream& out, const RunResult& r) {
         out << '}';
     } else out << "null";
     out << ",\n";
-    out << "  \"counts\":{\"requested\":" << c.requested << ",\"started\":" << c.started
-        << ",\"completed\":" << c.completed << ",\"successes\":" << c.successes
-        << ",\"http_errors\":" << c.http_errors << ",\"connection_errors\":" << c.connection_errors
-        << ",\"network_errors\":" << c.network_errors << ",\"tls_errors\":" << c.tls_errors << ",\"timeouts\":" << c.timeouts
-        << ",\"response_limit_errors\":" << c.response_limit_errors << ",\"cancelled\":" << c.cancelled
-        << ",\"not_started\":" << c.not_started << "},\n  \"http_status_counts\":{";
+    out << "  \"endpoint_results\":";
+    if (r.config.mix) {
+        out << '[';
+        for (std::size_t i = 0; i < r.endpoints.size(); ++i) {
+            const auto& e = r.endpoints[i];
+            const auto& counts = e.counters;
+            if (i) out << ',';
+            out << "{\"path\":"; quoted(out, r.config.mix->endpoints()[i].path);
+            out << ",\"counts\":"; counts_json(out, counts);
+            out << ",\"failed\":" << counts.completed - counts.successes
+                << ",\"missed_capacity\":" << e.missed_capacity << ",\"missed_late\":" << e.missed_late
+                << ",\"not_evaluated\":" << counts.not_started - e.missed_capacity - e.missed_late
+                << ",\"completed_throughput_rps\":" << throughput(counts.completed, r.elapsed_seconds)
+                << ",\"successful_throughput_rps\":" << throughput(counts.successes, r.elapsed_seconds)
+                << ",\"success_latency_ms\":"; latency_json(out, e.success_latency_ms);
+            out << ",\"completed_latency_ms\":"; latency_json(out, e.completed_latency_ms);
+            out << '}';
+        }
+        out << ']';
+    } else out << "null";
+    out << ",\n  \"counts\":"; counts_json(out, c);
+    out << ",\n  \"http_status_counts\":{";
     bool first = true;
     for (std::size_t status = 100; status < r.http_status_counts.size(); ++status) {
         if (r.http_status_counts[status] == 0) continue;
@@ -305,6 +391,18 @@ void write_summary(std::ostream& out, const RunResult& r) {
             << " p95=" << s.p95 << " p99=" << s.p99 << " mean=" << s.mean << '\n';
     } else {
         out << "Successful request latency: no samples\n";
+    }
+    for (std::size_t i = 0; i < r.endpoints.size(); ++i) {
+        const auto& e = r.endpoints[i];
+        const auto& counts = e.counters;
+        out << r.config.mix->endpoints()[i].path << " planned=" << counts.requested << " started=" << counts.started
+            << " completed=" << counts.completed << " successful=" << counts.successes << " failed=" << counts.completed - counts.successes
+            << " cancelled=" << counts.cancelled << " missed_capacity=" << e.missed_capacity << " missed_late=" << e.missed_late
+            << " not_evaluated=" << counts.not_started - e.missed_capacity - e.missed_late
+            << " successful/s=" << throughput(counts.successes, r.elapsed_seconds);
+        if (e.success_latency_ms.samples) out << " successful_p95_ms=" << e.success_latency_ms.p95;
+        if (e.completed_latency_ms.samples) out << " completed_p95_ms=" << e.completed_latency_ms.p95;
+        out << '\n';
     }
     if (r.interrupted) out << "Run interrupted; partial results retained.\n";
     if (!r.engine_error.empty()) out << "Engine error: " << r.engine_error << '\n';

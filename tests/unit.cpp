@@ -131,6 +131,47 @@ void fixed_rate_schedule() {
             result.scheduling.dispatch_delay_ms.samples == 0, "stop before schedule starts");
 }
 
+void weighted_arrivals() {
+    const auto mix = [](std::uint64_t a, std::uint64_t b) {
+        return spe::EndpointMix(std::array{spe::WeightedEndpoint{"/a", a}, spe::WeightedEndpoint{"/b", b}});
+    };
+    for (const auto& [a, b] : {std::pair{4u, 1u}, {1u, 4u}, {1u, 1u}, {7u, 13u}, {999999u, 1u}}) {
+        const auto m = mix(a, b);
+        std::uint64_t first = 0;
+        for (std::uint64_t n = 1; n <= 1000; ++n) {
+            if (m.endpoint_at(n - 1) == 0) ++first;
+            require(first == m.count_before(0, n) && n-first == m.count_before(1, n), "prefix and routing agree");
+            const auto error = static_cast<std::int64_t>(first*(a+b)) - static_cast<std::int64_t>(n*a);
+            require(2*std::abs(error) <= a+b, "every prefix stays within half an arrival of quota");
+        }
+    }
+    auto c = config();
+    c.fixed_rate = spe::FixedRate{100, 10000};
+    c.mix = mix(80, 20);
+    c.url = "http://localhost";
+    require(c.mix->endpoints()[0].weight == 4 && c.mix->endpoints()[1].weight == 1, "canonical weights");
+    require(mix(1, 1).endpoint_at(0) == 0 && mix(1, 1).endpoint_at(1) == 1, "ties favor first endpoint");
+    require(c.mix->count_before(0, spe::max_requests) == 800000, "maximum bounded prefix");
+    invalid([&] { c.mix->endpoint_at(spe::max_requests); });
+    invalid([&] { c.mix->count_before(2, 3); });
+    spe::ArrivalSchedule schedule(*c.fixed_rate);
+    spe::Measurements m(c);
+    const auto jump = schedule.advance(std::chrono::milliseconds(55), false);
+    require(jump.first == 0 && jump.expired == 5 && jump.at_capacity, "jump contains expired range and one current arrival");
+    m.miss_arrivals(jump.expired, jump.at_capacity, jump.first);
+    const auto next = schedule.advance(std::chrono::milliseconds(60), true);
+    require(next.first == 6 && next.dispatch.has_value(), "never replay expired ordinals");
+    m.start(0, c.mix->endpoint_at(next.first));
+    m.record(spe::Outcome::cancelled, 0, 0, 0, 0);
+    const auto r = m.finish(0.061, 1, true);
+    require(r.endpoints[0].missed_late == 4 && r.endpoints[1].missed_late == 1 &&
+            r.endpoints[0].missed_capacity == 1 && r.endpoints[0].counters.cancelled == 1, "per-endpoint interrupted prefix");
+    spe::Measurements stalled(c);
+    stalled.miss_arrivals(1000, false, 0);
+    const auto expired = stalled.finish(10.001, 0, false);
+    require(expired.endpoints[0].missed_late == 800 && expired.endpoints[1].missed_late == 200, "whole window expiry");
+}
+
 void percentiles() {
     require(spe::summarize_latencies({}).samples == 0, "empty latency");
     const auto one = spe::summarize_latencies({7.5});
@@ -226,6 +267,7 @@ int main() {
     };
     test("CLI and validation", cli_and_validation);
     test("fixed-rate schedule", fixed_rate_schedule);
+    test("weighted arrivals", weighted_arrivals);
     test("percentiles", percentiles);
     test("accounting", accounting);
     test("JSON and pre-dispatch cancellation", json_and_cancellation);

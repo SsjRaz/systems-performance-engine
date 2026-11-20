@@ -99,7 +99,7 @@ class ComparisonTests(unittest.TestCase):
     def compare(self, a, b, *, expected=0, extra=()):
         process = self.command(["compare", a, b, *extra, "--json", "-"], expected)
         report = json.loads(process.stdout, parse_constant=lambda value: self.fail(f"nonfinite output {value}"))
-        self.assertEqual(report["schema_version"], 4)
+        self.assertEqual(report["schema_version"], 5)
         self.assertEqual(report["kind"], "spe_comparison")
         self.assertEqual(report["statistical_verdict"], "not_assessed")
         self.assertIn("Statistical verdict: NOT ASSESSED.", process.stderr)
@@ -313,7 +313,7 @@ class ComparisonTests(unittest.TestCase):
     def test_malformed_duplicate_and_nonfinite_json(self):
         baseline = self.save(numerical_fixture())
         original = json.dumps(numerical_fixture())
-        cases = ["{", "null", "[]", original + " trailing", "/* comment */" + original,
+        cases = ["{", "null", "[]", original + " trailing", original + "\x00trailing", "/* comment */" + original,
                  original[:-1] + ",}", original.replace('"elapsed_seconds": 10', '"elapsed_seconds": NaN'),
                  original.replace('"elapsed_seconds": 10', '"elapsed_seconds": Infinity'),
                  original.replace('"elapsed_seconds": 10', '"elapsed_seconds": 1e10000'),

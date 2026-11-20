@@ -1,5 +1,7 @@
 #pragma once
 
+#include "spe/workload.hpp"
+
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -27,6 +29,7 @@ struct Config {
     std::string ca_file;
     std::string headers_file;
     std::optional<FixedRate> fixed_rate;
+    std::optional<EndpointMix> mix;
 
     std::uint64_t request_budget() const {
         return fixed_rate ? fixed_rate->planned_arrivals() : requests;
