@@ -765,7 +765,7 @@ int comparison_exit_code(ComparisonStatus status) {
     return status == ComparisonStatus::descriptive ? 0 : status == ComparisonStatus::insufficient_evidence ? 3 : 2;
 }
 
-ComparisonReport compare_saved_results(const CompareOptions& options) {
+ComparisonReport compare_saved_results(const CompareOptions& options, bool reject_copied_measurements) {
     Json report{{"schema_version", 6}, {"kind", "spe_comparison"}, {"statistical_verdict", "not_assessed"},
         {"status", "rejected"}, {"checks", Json::array()}, {"metrics", Json::object()}};
     std::string context = "inputs";
@@ -785,12 +785,17 @@ ComparisonReport compare_saved_results(const CompareOptions& options) {
             require(expected_bytes <= max_total_bytes, "combined input exceeds 32 MiB");
         }
         std::set<FileIdentity> identities;
+        std::set<std::string> content_ids;
         std::size_t bytes = 0;
         std::vector<Run> baseline, candidate;
         for (auto pair : {std::pair{&options.baseline, &baseline}, std::pair{&options.candidate, &candidate}}) {
             for (const auto& path : *pair.first) {
                 context = path;
-                auto run = read_run(path, bytes, identities); validate(run); pair.second->push_back(std::move(run));
+                auto run = read_run(path, bytes, identities);
+                if (reject_copied_measurements)
+                    require(content_ids.insert(sha256_hex(run.document.dump())).second, "duplicate measurement contents");
+                validate(run);
+                pair.second->push_back(std::move(run));
                 report["checks"].push_back(Json{{"input", path}, {"schema_accounting_measurements", "pass"}});
             }
         }

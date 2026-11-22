@@ -1,5 +1,7 @@
 # Build and CLI reference
 
+Paired manifests and advisory regression analysis are documented in the [regression analysis guide](REGRESSION.md).
+
 ## Untimed response verification
 
 Use `--verify-response policy.json` to send one preflight request per endpoint. The owner-only file declares a public `policy_id` and rules in workload order. Choose an ID safe to publish and change it when assertions change.

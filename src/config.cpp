@@ -246,6 +246,7 @@ std::string_view usage() {
            "  --help, -h         Show help\n"
            "  --version          Show version\n"
            "Saved results: spe compare BASELINE.json CANDIDATE.json [options]\n"
-           "  spe compare --help shows comparison options.\n";
+           "  spe compare --help shows comparison options.\n"
+           "Paired experiments: spe analyze MANIFEST.json [--json PATH|-]\n";
 }
 }
