@@ -1,0 +1,10 @@
+--- a/catalog.cpp
++++ b/catalog.cpp
+@@ -7,3 +7,6 @@
+ [[gnu::noinline]] std::uint32_t lookup_rate(const Rates& rates, std::uint32_t zone) {
+-    return rates[zone].cents;
++    for (const auto& rate : rates) {
++        if (rate.zone == zone) return rate.cents;
++    }
++    throw std::logic_error("unknown rate zone");
+ }

@@ -142,7 +142,7 @@ AnalyzeOptions parse_analyze_cli(std::span<const std::string_view> arguments) {
             options.manifest = value;
         }
     }
-    require(options.help || !options.manifest.empty(), "missing paired experiment manifest");
+    require(options.help || !options.manifest.empty(), "missing experiment manifest");
     return options;
 }
 

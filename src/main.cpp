@@ -1,6 +1,7 @@
 #include "spe/config.hpp"
 #include "spe/compare.hpp"
 #include "spe/analyze.hpp"
+#include "spe/profile.hpp"
 #include "spe/engine.hpp"
 #include "spe/result.hpp"
 
@@ -45,38 +46,46 @@ public:
 private:
     int descriptor_ = -1;
 };
+
+template<class Options, class Evaluate>
+int report_command(const Options& options, std::string_view usage, Evaluate evaluate) {
+    if (options.help) {
+        std::cout << usage;
+        return 0;
+    }
+    const auto& json_path = options.json_path;
+    ResultFile file(json_path);
+    if (std::signal(SIGPIPE, SIG_IGN) == SIG_ERR) throw std::runtime_error("cannot install output signal handler");
+    const auto report = evaluate(options);
+    const bool json_stdout = json_path == "-";
+    auto& summary = json_stdout ? std::cerr : std::cout;
+    summary << report.summary;
+    if (json_stdout) {
+        std::cout << report.json;
+        std::cout.flush();
+        if (!std::cout) throw std::runtime_error("cannot write comparison JSON");
+    } else if (file.enabled()) file.write(report.json);
+    summary.flush();
+    if (!summary) throw std::runtime_error("cannot write comparison summary");
+    return spe::comparison_exit_code(report.status);
+}
 }
 
 int main(int argc, char** argv) {
     try {
         std::vector<std::string_view> arguments;
         for (int i = 1; i < argc; ++i) arguments.emplace_back(argv[i]);
-        if (!arguments.empty() && (arguments.front() == "compare" || arguments.front() == "analyze")) {
+        if (!arguments.empty()) {
+            const auto command = arguments.front();
             const auto args = std::span<const std::string_view>(arguments).subspan(1);
-            const bool paired = arguments.front() == "analyze";
-            spe::CompareOptions comparison;
-            spe::AnalyzeOptions analysis;
-            if (paired) analysis = spe::parse_analyze_cli(args);
-            else comparison = spe::parse_compare_cli(args);
-            if (analysis.help || comparison.help) {
-                std::cout << (paired ? spe::analyze_usage() : spe::compare_usage());
-                return 0;
+            if (command == "compare") {
+                return report_command(spe::parse_compare_cli(args), spe::compare_usage(),
+                    [](const auto& options) { return spe::compare_saved_results(options); });
             }
-            const auto& json_path = paired ? analysis.json_path : comparison.json_path;
-            ResultFile file(json_path);
-            if (std::signal(SIGPIPE, SIG_IGN) == SIG_ERR) throw std::runtime_error("cannot install output signal handler");
-            const auto report = paired ? spe::analyze_experiment(analysis) : spe::compare_saved_results(comparison);
-            const bool json_stdout = json_path == "-";
-            auto& summary = json_stdout ? std::cerr : std::cout;
-            summary << report.summary;
-            if (json_stdout) {
-                std::cout << report.json;
-                std::cout.flush();
-                if (!std::cout) throw std::runtime_error("cannot write comparison JSON");
-            } else if (file.enabled()) file.write(report.json);
-            summary.flush();
-            if (!summary) throw std::runtime_error("cannot write comparison summary");
-            return spe::comparison_exit_code(report.status);
+            if (command == "analyze")
+                return report_command(spe::parse_analyze_cli(args), spe::analyze_usage(), spe::analyze_experiment);
+            if (command == "profile-diff")
+                return report_command(spe::parse_analyze_cli(args), spe::profile_usage(), spe::compare_cpu_profiles);
         }
         const auto options = spe::parse_cli(arguments);
         if (options.help) { std::cout << spe::usage(); return 0; }

@@ -53,7 +53,7 @@ if(NOT APPLE)
     find_package(OpenSSL 1.1.1 REQUIRED COMPONENTS Crypto)
     target_link_libraries(spe_core PRIVATE OpenSSL::Crypto)
 endif()
-add_library(spe_comparison src/compare.cpp src/analyze.cpp)
+add_library(spe_comparison src/compare.cpp src/analyze.cpp src/profile.cpp)
 target_include_directories(spe_comparison PUBLIC include)
 target_include_directories(spe_comparison SYSTEM PRIVATE third_party/nlohmann/include)
 target_link_libraries(spe_comparison PUBLIC spe_core)
@@ -85,6 +85,9 @@ if(BUILD_TESTING)
     add_test(NAME methods COMMAND "${Python3_EXECUTABLE}"
         "${PROJECT_SOURCE_DIR}/tests/run_suite.py" --suite methods --engine "$<TARGET_FILE:spe>"
         --openssl "${SPE_OPENSSL_PROGRAM}" --artifacts "${PROJECT_BINARY_DIR}/test-results/managed")
+    add_test(NAME cpu_profile_comparison COMMAND "${Python3_EXECUTABLE}"
+        "${PROJECT_SOURCE_DIR}/tests/profile_diff.py" --engine "$<TARGET_FILE:spe>")
+    set_tests_properties(cpu_profile_comparison PROPERTIES TIMEOUT 120 LABELS "comparison;network;integration")
     add_test(NAME paired_analysis COMMAND "${Python3_EXECUTABLE}"
         "${PROJECT_SOURCE_DIR}/tests/analysis.py" --engine "$<TARGET_FILE:spe>")
     set_tests_properties(paired_analysis PROPERTIES TIMEOUT 120 LABELS "comparison;network;integration")
