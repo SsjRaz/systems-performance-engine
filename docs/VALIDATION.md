@@ -205,3 +205,22 @@ Sixteen fresh, nonoverlapping JVM/database blocks used 384 MiB maximum heaps and
 Individual paired code-change contrasts changed direction for both tools. Identical-code block throughput CVs were 16.64% for SPE and 17.33% for k6. Paging and continued JVM compilation were observed without establishing their causal contributions. The SQL reduction is verified; a reliable end-to-end speedup is not established. These are generated-data, local H2 hot-endpoint observations, not production capacity measurements or statistical verdicts. Sampled process-memory observations do not establish a general efficiency advantage for either tool.
 
 Raw inputs, source/bytecode checks, command lines, response checks, SQL traces, measurements, resource samples, native comparison reports, and block-level analysis remain local under `build/application-experiments/owner-reuse-20261116T184843Z-ubig3a6z/`. Temporary scripts and archives from that directory are not part of the repository.
+
+## Linux fixed-rate idle waits
+
+On a Linux x86-64 guest, the generator at `fd03ae5` rounded an idle 0.5 ms arrival period up to a one-millisecond libcurl poll. With no active transfer, `8d29963` sleeps until the scheduler's monotonic deadline. Active transfers still use libcurl polling. Both waits retain the 50 ms cancellation bound.
+
+A baseline/candidate comparison alternated A–B–B–A and B–A–A–B, with a fresh generator and Python timing fixture for every trial. Both binaries used GCC 14.2 Release and libcurl 8.14.1. Generator and server were pinned to distinct guest CPUs on one host. The bounded Linux runner, unchanged-code control and measurement definitions are in the [baseline checkpoint](https://github.com/SsjRaz/systems-performance-engine/blob/36ab93fcf5466e38fc7eb5171b08836c3c717fe9/docs/LINUX-PACING.md). Use the two binaries with `--blocks 2` to reproduce the comparison.
+
+Four three-second runs per binary and rate, concurrency 4. Each pair shows baseline → candidate. Rates and p95s are medians of run statistics. Misses and independently counted receipts are totals.
+
+| Target/s | Dispatched/s | Successful/s | Late | At capacity | Server receipts | Dispatch p95 ms | Receipt gap p95 ms |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 100 | 100 → 100 | 99.98 → 100.00 | 1 → 0 | 0 → 0 | 1,199 → 1,200 | 1.042 → 0.123 | 10.448 → 10.154 |
+| 500 | 499.5 → 497.8 | 499.36 → 497.82 | 2 → 7 | 4 → 24 | 5,994 → 5,969 | 1.029 → 0.108 | 2.322 → 2.094 |
+| 1,000 | 927.0 → 993.7 | 926.80 → 993.64 | 850 → 38 | 26 → 38 | 11,124 → 11,924 | 0.957 → 0.100 | 1.319 → 1.077 |
+| 2,000 | 1,075.0 → 1,952.7 | 1,074.87 → 1,952.62 | 11,096 → 497 | 17 → 21 | 12,887 → 23,482 | 0.464 → 0.120 | 1.294 → 0.601 |
+
+At 2,000/s every candidate run (1,938–1,984 successes/s) exceeded every baseline run (1,065–1,080/s). The unchanged-binary control spanned 1,074–1,088/s. Generator CPU rose from 6.2% to 11.2% of one core as the number of transfers increased. Median generator CPU time per dispatched request was 58.4 → 57.8 µs. Fixture CPU rose from 8.7% to 15.5%. Median observed generator/fixture RSS was 7.5/19.8 MiB on the baseline and 7.7/20.0 MiB on the candidate. At 500/s the candidate delivered slightly fewer arrivals despite lower dispatch delay among starts. All started requests in every trial matched a server receipt and completed successfully.
+
+A separate one-second trace at 2,000/s found 691 timed-out one-millisecond polls on the lone wakeup eventfd before the change and zero after. Traced trials were excluded from timing. Closed-loop trials at concurrency 1, 4 and 16 delivered all 4,096 requests per trial with overlapping throughput ranges across builds. These experiments support the idle-wait change on this guest. Operating-system scheduling and shared-host effects remain, and independent-host pacing is still unmeasured.
