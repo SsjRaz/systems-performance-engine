@@ -80,7 +80,7 @@ build/release/spe http://127.0.0.1:8081/items --method POST \
 
 POST, PUT and PATCH accept a regular, owner-only body file up to 65,536 bytes. The engine reads it once before starting the run and sends its exact bytes on each dispatch. An omitted or empty file sends zero bytes. The default content type is `application/octet-stream`. Use the headers file to select another type. SPE controls framing and calculates Content-Length. `--max-body-bytes` limits the **response**.
 
-Each write opens a fresh HTTP/1.1 connection. This avoids libcurl's stale-connection replay and includes connection setup in the measured latency. Redirect following, application retries and automatic Expect negotiation are disabled. A server may already have applied a write when its response is lost. SPE records that request as a failure.
+Each write opens a fresh HTTP/1.1 connection. This avoids libcurl's stale-connection replay and includes connection setup in the measured latency. Redirect following, application retries and automatic Expect negotiation are disabled. A server may already have applied a write when its response is lost, the client times out, or the run is cancelled. The result records the outcome seen by the client. Check server records before deciding whether to submit that write again.
 
 Schema 6 records the method, connection reuse policy and `request_body_bytes`. The payload, its hash and the private file path are omitted. Comparing nonempty bodies requires matching lengths and `--allow-redacted-body` to acknowledge that contents cannot be verified. Custom header values have their own acknowledgement. To exercise all methods against a controlled local server, run `ctest --test-dir build/release -R '^methods$' --output-on-failure`.
 

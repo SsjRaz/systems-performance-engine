@@ -1,7 +1,9 @@
 """Verify HTTP verbs, request framing, replay policy and saved contracts on loopback."""
 import argparse
+import hashlib
 import json
 import os
+import signal
 import subprocess
 import tempfile
 import threading
@@ -22,7 +24,12 @@ class WireHandler(Handler):
                 lengths=self.headers.get_all('Content-Length', []), types=self.headers.get_all('Content-Type', []),
                 expect=self.headers.get('Expect'), transfer=self.headers.get('Transfer-Encoding'),
                 auth=self.headers.get('Authorization')))
-        if self.path == '/lost-response':
+            ordinal = len(self.server.receipts)
+        if self.path == '/hold-response':
+            self.server.body_received.set()
+            self.server.release_response.wait(10)
+            self.close_connection = True
+        elif self.path == '/lost-response' or (self.path == '/lose-second-response' and ordinal == 2):
             self.close_connection = True  # The server has already consumed the write.
         elif self.command == 'HEAD':
             self.send_response(200)
@@ -36,6 +43,8 @@ class WireHandler(Handler):
 
 def observe(service):
     service.server.receipts = []
+    service.server.body_received = threading.Event()
+    service.server.release_response = threading.Event()
     service.server.RequestHandlerClass = WireHandler
     return service.server.receipts
 
@@ -55,12 +64,15 @@ class Methods(unittest.TestCase):
         path.write_bytes(data)
         return path
 
+    def report(self, returncode, stdout, stderr, code, private):
+        for value in private:
+            self.assertNotIn(str(value), stdout + stderr)
+        self.assertEqual(returncode, code, (stdout, stderr))
+        return json.loads(stdout) if stdout else None
+
     def cli(self, args, code, private=()):
         run = subprocess.run([self.engine, *args], capture_output=True, text=True, timeout=10)
-        for value in private:
-            self.assertNotIn(str(value), run.stdout + run.stderr)
-        self.assertEqual(run.returncode, code, run.stderr)
-        return json.loads(run.stdout) if run.stdout else None
+        return self.report(run.returncode, run.stdout, run.stderr, code, private)
 
     def workload(self, url, *args, code=0, private=()):
         result = self.cli([url, *args, '--json', '-'], code, private)
@@ -152,6 +164,73 @@ class Methods(unittest.TestCase):
             self.assertEqual(r['scheduling']['offered'], 2)
             self.assertEqual([(x['types'], x['body'], x['auth']) for x in wire],
                              [(['application/json'], payload.encode(), token)] * 2)
+
+    def test_second_write_loses_response_after_success(self):
+        data = b'wire-test\x00\xff'
+        body = self.private_file('two-writes', data)
+        for method in ('POST', 'PUT', 'PATCH', 'DELETE'):
+            with self.subTest(method=method), RunningService() as svc:
+                wire = observe(svc)
+                payload = [] if method == 'DELETE' else ['--body-file', body]
+                r = self.workload(svc.url + '/lose-second-response', '--method', method,
+                                  '--requests', '2', '--concurrency', '1', *payload, code=3)
+                self.assertEqual(r['counts']['successes'], 1)
+                self.assertEqual(r['counts']['network_errors'], 1)
+                self.assertEqual([(x['method'], x['body']) for x in wire],
+                                 [(method, b'' if method == 'DELETE' else data)] * 2)
+                self.assertEqual(len({x['port'] for x in wire}), 2)
+
+    def test_https_timeout_after_body_received(self):
+        marker = 'timeout-private-payload'
+        data = marker.encode() + b'\x00\xff'
+        body = self.private_file('timeout-body', data)
+        ca = self.certs/'root.pem'
+        with RunningTLS(self.certs) as svc:
+            wire = observe(svc)
+            try:
+                r = self.workload(svc.url + '/hold-response', '--method', 'PUT', '--body-file', body,
+                                  '--ca-file', ca, '--timeout-ms', '750', code=3,
+                                  private=(marker, body, ca, hashlib.sha256(data).hexdigest()))
+                self.assertTrue(svc.server.body_received.is_set())
+                self.assertEqual([(x['method'], x['body']) for x in wire], [('PUT', data)])
+                self.assertFalse(r['interrupted'])
+                self.assertEqual(r['counts']['requested'], 1)
+                self.assertEqual(r['counts']['timeouts'], 1)
+                self.assertEqual(r['counts']['completed'], 1)
+                self.assertEqual(r['workload']['request_body_bytes'], len(data))
+            finally:
+                svc.server.release_response.set()
+
+    def test_cancel_after_body_received(self):
+        marker = 'cancel-private-payload'
+        data = marker.encode() + b'\x00\xff'
+        body = self.private_file('cancel-body', data)
+        for budget in (['--requests', '4'], ['--rate', '1', '--duration-ms', '4000']):
+            with self.subTest(budget=budget), RunningService() as svc:
+                wire = observe(svc)
+                args = [self.engine, svc.url + '/hold-response', '--method', 'PATCH', '--body-file', body,
+                        *budget, '--concurrency', '1', '--timeout-ms', '8000', '--json', '-']
+                with subprocess.Popen(args, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE) as child:
+                    try:
+                        self.assertTrue(svc.server.body_received.wait(5))
+                        child.send_signal(signal.SIGTERM)
+                        stdout, stderr = child.communicate(timeout=3)
+                        r = self.report(child.returncode, stdout, stderr, 128 + signal.SIGTERM,
+                                        (marker, body, hashlib.sha256(data).hexdigest()))
+                    finally:
+                        svc.server.release_response.set()
+                        if child.poll() is None:
+                            child.kill()
+                            child.communicate()
+                integration.HttpIntegration.check_accounting(self, r)
+                if r['workload']['model'] == 'fixed_arrival_rate':
+                    integration.HttpIntegration.check_schedule(self, r)
+                self.assertTrue(r['interrupted'])
+                self.assertEqual(r['counts']['requested'], 4)
+                self.assertEqual(r['counts']['cancelled'], 1)
+                self.assertEqual(r['counts']['completed'], 0)
+                self.assertEqual(r['counts']['not_started'], 3)
+                self.assertEqual([(x['method'], x['body']) for x in wire], [('PATCH', data)])
 
     def test_invalid_inputs_are_rejected_before_dispatch(self):
         oversized = self.private_file('oversized', b'x' * 65537)
