@@ -792,9 +792,11 @@ ComparisonReport compare_saved_results(const CompareOptions& options, bool rejec
             for (const auto& path : *pair.first) {
                 context = path;
                 auto run = read_run(path, bytes, identities);
-                if (reject_copied_measurements)
-                    require(content_ids.insert(sha256_hex(run.document.dump())).second, "duplicate measurement contents");
                 validate(run);
+                // Failed preflights have zero timing data and can genuinely be identical
+                // within one timestamp second. They already exclude the whole campaign.
+                if (reject_copied_measurements && run.clean)
+                    require(content_ids.insert(sha256_hex(run.document.dump())).second, "duplicate measurement contents");
                 pair.second->push_back(std::move(run));
                 report["checks"].push_back(Json{{"input", path}, {"schema_accounting_measurements", "pass"}});
             }

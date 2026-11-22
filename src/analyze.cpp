@@ -88,7 +88,7 @@ ComparisonReport finish(Json report, ComparisonStatus status, std::string reason
     if (report.contains("input_error")) summary << report.at("input_error").get<std::string>() << '\n';
     if (report.contains("meaningful_change_percent"))
         summary << "Predeclared threshold " << report.at("meaningful_change_percent") << "%, "
-                << report.at("declared_pairs") << " declared pairs\n";
+                << report.value("declared_pairs", 0U) << " declared pairs\n";
     if (!report.at("effect_percent").is_null()) {
         summary << report.at("metric").get<std::string>() << " median paired change " << report.at("effect_percent")
                 << "% over " << report.at("independent_pairs") << " declared independent pairs\n";

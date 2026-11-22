@@ -276,8 +276,9 @@ def main(args):
     rng = random.Random(SEED)
     campaigns = []
     app_setup = {}
-    if args.mode == "fixture":
-        for number in range(1, CAMPAIGNS + 1):
+    if args.mode in ("fixture", "diagnostics"):
+        campaigns_to_measure = range(1, CAMPAIGNS + 1) if args.mode == "fixture" else ()
+        for number in campaigns_to_measure:
             for case in CASES:
                 candidate = case if case in ("cpu", "delay", "small") else "baseline"
                 campaigns.append(
@@ -364,7 +365,7 @@ def main(args):
         observations = []
         for row in itertools.chain.from_iterable(b["runs"] for b in manifest["blocks"]):
             out = folder / row["result"]
-            if args.mode == "fixture":
+            if args.mode != "apps":
                 observation = fixture_run(
                     args.engine, case, row["arm"], port, root / "checks.json", out
                 )
@@ -410,7 +411,7 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("mode", choices=("fixture", "apps"))
+    parser.add_argument("mode", choices=("fixture", "diagnostics", "apps"))
     for arg in ("engine", "output", "meili", "gitea", "tools"):
         parser.add_argument("--" + arg, type=Path, required=arg in ("engine", "output"))
     main(parser.parse_args())

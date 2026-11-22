@@ -143,7 +143,8 @@ class PairedAnalysis(unittest.TestCase):
         doc["blocks"].reverse()
         self.assertIn("timestamps", self.analyze(doc, 2)["input_error"])
         doc = self.design([50] * 6)
-        (self.root / "run-0.json").write_text(json.dumps(self.failed))
+        for name in ("run-0.json", "run-1.json"):
+            (self.root / name).write_text(json.dumps(self.failed))
         self.assertEqual(self.analyze(doc, 3)["reason"], "failed_or_incomplete_runs")
         doc = self.design([50] * 6)
         for path in self.root.glob("run-*.json"):
