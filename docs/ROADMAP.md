@@ -13,12 +13,13 @@ The project is building toward reproducible comparisons of backend service versi
 | Configurable GET headers | Implemented | Private file input, strict field policy, redacted reports, explicit comparison acknowledgement, and authenticated HTTP/HTTPS tests. |
 | Fixed-arrival-rate scheduling | Implemented | Monotonic deadlines, bounded admission, dispatch-delay measurements and explicit missed arrivals. |
 | Two-endpoint GET workloads | Implemented | Reproducible weighted assignment on one origin with per-path outcomes, latency and overload accounting. |
+| Bounded HTTP methods and request bodies | Implemented | HEAD and single-target writes with private payloads, explicit budgets for repeated writes, and wire-level tests. |
 | Statistical comparison | Planned | Validated uncertainty methods and practical decision rules based on experimental runs or JVM blocks. |
 | Workload and CI extensions | Under consideration | Broader HTTP workloads, automation, and result export. |
 
 ## Implemented foundation
 
-- C++20/CMake CLI using libcurl for concurrent HTTP/1.1 GET requests over HTTP and HTTPS.
+- C++20/CMake CLI using libcurl for concurrent HTTP/1.1 requests over HTTP and HTTPS.
 - Closed-loop and fixed-rate scheduling with bounded concurrency, timeouts, and response size.
 - Complete request outcome accounting, interruption handling, and versioned JSON results.
 - Native `spe compare` for one or more saved runs per version, with compatibility checks, failure diagnostics, and descriptive summaries.
@@ -53,7 +54,7 @@ Statistical methods, practical thresholds, and minimum evidence requirements are
 
 ## Later capabilities
 
-Further HTTP work includes request methods/bodies, with careful credential handling and local protocol/outcome tests. Further scheduler validation includes independent-host pacing and generator saturation measurements. Sanitized trace replay, CI performance-comparison reports, native profiling, and observability exports remain candidates. Priorities depend on measurement evidence and developer feedback. Automated correctness testing is already configured separately from performance comparisons.
+Further scheduler validation includes independent-host pacing and generator saturation measurements. Sanitized trace replay, CI performance-comparison reports, native profiling, and observability exports remain candidates. Priorities depend on measurement evidence and developer feedback. Automated correctness testing is already configured separately from performance comparisons.
 
 Developer-demand validation is also outstanding. The technical experiments establish local feasibility, while adoption, repeat usage, and commercial value remain open research questions.
 

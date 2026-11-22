@@ -29,6 +29,13 @@ bool is_normalized_header_name(std::string_view name) {
 
 void HeaderListDeleter::operator()(curl_slist* list) const noexcept { curl_slist_free_all(list); }
 
+void PreparedHeaders::append_line(const char* line) {
+    auto* appended = curl_slist_append(lines.get(), line);
+    if (!appended) throw std::runtime_error("cannot allocate request headers");
+    lines.release();
+    lines.reset(appended);
+}
+
 PreparedHeaders load_headers_file(const std::string& path) {
     const auto document = read_config_json(path, ConfigFile::private_headers);
     if (!document.is_array() || document.size() > 32)
@@ -51,10 +58,7 @@ PreparedHeaders load_headers_file(const std::string& path) {
         if (wire_bytes > 16 * 1024) throw std::invalid_argument("configured headers exceed 16 KiB total wire size");
         // A semicolon requests a literal empty field, rather than libcurl suppression.
         const auto line = value.empty() ? name + ';' : name + ": " + value;
-        auto* appended = curl_slist_append(result.lines.get(), line.c_str());
-        if (!appended) throw std::runtime_error("cannot allocate request headers");
-        result.lines.release();
-        result.lines.reset(appended);
+        result.append_line(line.c_str());
     }
     result.names.assign(names.begin(), names.end());
     return result;

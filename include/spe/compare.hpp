@@ -13,6 +13,7 @@ struct CompareOptions {
     bool allow_origin_change = false;
     bool allow_redacted_headers = false;
     bool help = false;
+    bool allow_redacted_body = false;
 };
 
 enum class ComparisonStatus { descriptive, insufficient_evidence, rejected };

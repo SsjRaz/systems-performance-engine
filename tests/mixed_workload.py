@@ -62,7 +62,7 @@ class MixTests(unittest.TestCase):
 
     def check_result(self, svc, name, result, receipts, *, check_status=True):
         e = result['endpoint_results']
-        self.assertEqual(result['schema_version'], 5)
+        self.assertEqual(result['schema_version'], 6)
         self.assertEqual([x['path'] for x in e], [x['path'] for x in result['workload']['endpoint_mix']['endpoints']])
         counts, scheduling = result['counts'], result['scheduling']
         for k in counts:

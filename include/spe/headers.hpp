@@ -12,6 +12,7 @@ struct HeaderListDeleter { void operator()(curl_slist* list) const noexcept; };
 struct PreparedHeaders {
     std::unique_ptr<curl_slist, HeaderListDeleter> lines;
     std::vector<std::string> names;
+    void append_line(const char* line);
 };
 
 // Private values live only in the immutable list, which must outlive easy handles.

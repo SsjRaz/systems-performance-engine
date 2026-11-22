@@ -98,7 +98,8 @@ LatencySummary summarize_latencies(std::vector<double> samples) {
             rank(50), rank(95), rank(99), samples.back()};
 }
 
-Measurements::Measurements(const Config& config, std::string ca_bundle_sha256, std::vector<std::string> header_names) {
+Measurements::Measurements(const Config& config, std::string ca_bundle_sha256,
+                           std::vector<std::string> header_names, std::size_t request_body_bytes) {
     validate_config(config);
     if (config.ca_file.empty() != ca_bundle_sha256.empty() || (!ca_bundle_sha256.empty() &&
         (ca_bundle_sha256.size() != 64 || ca_bundle_sha256.find_first_not_of("0123456789abcdef") != std::string::npos)))
@@ -111,6 +112,9 @@ Measurements::Measurements(const Config& config, std::string ca_bundle_sha256, s
     result_.config = config;
     result_.ca_bundle_sha256 = std::move(ca_bundle_sha256);
     result_.header_names = std::move(header_names);
+    if (request_body_bytes > max_request_body_bytes || (request_body_bytes && config.body_file.empty()))
+        throw std::invalid_argument("invalid prepared request body size");
+    result_.request_body_bytes = request_body_bytes;
     const auto budget = static_cast<std::size_t>(config.request_budget());
     result_.counters.requested = budget;
     result_.started_at_utc = utc_timestamp();
@@ -250,7 +254,7 @@ std::string_view version() { return build_info::version; }
 void write_json(std::ostream& out, const RunResult& r) {
     out.imbue(std::locale::classic());
     out << std::defaultfloat << std::setprecision(17);
-    out << "{\n  \"schema_version\":5,\n  \"engine\":{\"version\":";
+    out << "{\n  \"schema_version\":6,\n  \"engine\":{\"version\":";
     quoted(out, version());
     out << ",\"source_revision\":"; quoted(out, build_info::revision);
     out << ",\"compiler\":"; quoted(out, build_info::compiler);
@@ -261,7 +265,8 @@ void write_json(std::ostream& out, const RunResult& r) {
     out << ",\"libcurl\":"; quoted(out, curl_version());
     out << "},\n  \"started_at_utc\":"; quoted(out, r.started_at_utc);
     out << ",\n  \"workload\":{\"url\":"; quoted(out, r.config.url);
-    out << ",\"method\":\"GET\",\"http_version\":\"1.1\",\"model\":";
+    out << ",\"method\":"; quoted(out, r.config.method);
+    out << ",\"request_body_bytes\":" << r.request_body_bytes << ",\"http_version\":\"1.1\",\"model\":";
     quoted(out, r.config.fixed_rate ? "fixed_arrival_rate" : "closed_loop");
     out << ",\"arrival_schedule\":";
     if (const auto rate = r.config.fixed_rate) {
@@ -280,7 +285,8 @@ void write_json(std::ostream& out, const RunResult& r) {
         }
         out << "]}";
     } else out << "null";
-    out << ",\"redirects\":false,\"proxy\":false,\"connection_reuse\":true,\"warmup_requests\":0,"
+    out << ",\"redirects\":false,\"proxy\":false,\"connection_reuse\":"
+        << (method_reuses_connections(r.config.method) ? "true" : "false") << ",\"warmup_requests\":0,"
            "\"application_retries\":0,\"success_policy\":\"complete_2xx\",\"requests\":" << r.counters.requested
         << ",\"concurrency\":" << r.config.concurrency << ",\"timeout_ms\":" << r.config.timeout_ms
         << ",\"max_body_bytes\":" << r.config.max_body_bytes << ",\"tls\":";

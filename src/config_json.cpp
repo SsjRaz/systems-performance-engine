@@ -1,4 +1,6 @@
 #include "config_json.hpp"
+#include "spe/body.hpp"
+#include "spe/config.hpp"
 
 #include <array>
 #include <cerrno>
@@ -13,17 +15,17 @@
 
 namespace spe {
 namespace {
-std::string read_file(const std::string& path, ConfigFile kind, const std::string& label) {
-    constexpr std::size_t limit = 64 * 1024;
+std::string read_file(const std::string& path, const std::string& label, bool private_input,
+                      std::size_t limit, bool allow_empty = false) {
     const auto fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NONBLOCK);
     if (fd < 0) throw std::system_error(errno, std::generic_category(), "cannot open " + label + " file");
     struct Descriptor { int value; ~Descriptor() { ::close(value); } } owner{fd};
     struct stat info{};
     if (::fstat(fd, &info) != 0) throw std::system_error(errno, std::generic_category(), "cannot inspect " + label + " file");
-    if (!S_ISREG(info.st_mode) || info.st_size <= 0 || static_cast<std::uintmax_t>(info.st_size) > limit)
-        throw std::invalid_argument(label + " file must be a nonempty regular file of at most 64 KiB");
-    if (kind == ConfigFile::private_headers && (info.st_mode & (S_IRWXG | S_IRWXO)))
-        throw std::invalid_argument("headers file must have owner-only permissions (for example chmod 600)");
+    if (!S_ISREG(info.st_mode) || (!allow_empty && info.st_size == 0) || static_cast<std::uintmax_t>(info.st_size) > limit)
+        throw std::invalid_argument(label + " requires a regular file of at most 64 KiB");
+    if (private_input && (info.st_mode & (S_IRWXG | S_IRWXO)))
+        throw std::invalid_argument(label + " file must have owner-only permissions (for example chmod 600)");
     std::string bytes;
     std::array<char, 4096> buffer{};
     while (true) {
@@ -38,10 +40,14 @@ std::string read_file(const std::string& path, ConfigFile kind, const std::strin
 }
 }
 
+std::string load_request_body(const std::string& path) {
+    return read_file(path, "request body", true, max_request_body_bytes, true);
+}
+
 nlohmann::json read_config_json(const std::string& path, ConfigFile kind) {
     using Json = nlohmann::json;
     const std::string label = kind == ConfigFile::private_headers ? "headers" : "workload";
-    const auto bytes = read_file(path, kind, label);
+    const auto bytes = read_file(path, label, kind == ConfigFile::private_headers, 64 * 1024);
     // The JSON lexer treats a raw NUL as end-of-input.
     if (bytes.find('\0') != std::string::npos) throw std::invalid_argument("invalid " + label + " JSON");
     Json document;
