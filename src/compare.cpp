@@ -131,10 +131,11 @@ struct Run {
     bool clean = false;
     std::string state;
     std::int64_t started_second = 0;
+    std::string file_sha256;
 };
 
 using FileIdentity = std::pair<std::uintmax_t, std::uintmax_t>;
-Run read_run(const std::string& path, std::size_t& total_bytes, std::set<FileIdentity>& identities) {
+Run read_run(const std::string& path, std::size_t& total_bytes, std::set<FileIdentity>& identities, bool paired) {
     const auto fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NONBLOCK);
     if (fd < 0) throw std::system_error(errno, std::generic_category(), "cannot open input");
     struct Descriptor { int value; ~Descriptor() { ::close(value); } } owner{fd};
@@ -174,7 +175,7 @@ Run read_run(const std::string& path, std::size_t& total_bytes, std::set<FileIde
         // Library parser messages can quote its contents; keep diagnostics generic.
         throw std::invalid_argument("invalid result JSON (syntax, encoding or numeric range)");
     }
-    return {path, std::move(document), {}, false, {}};
+    return {path, std::move(document), {}, false, {}, 0, paired ? sha256_hex(bytes) : std::string{}};
 }
 
 void latency(const Json& stats, std::uint64_t samples, double elapsed) {
@@ -595,7 +596,10 @@ Json group(const std::vector<Run>& runs, bool paired) {
             {"url", d.at("workload").at("url")}, {"counts", d.at("counts")}, {"engine_error", d.at("engine_error")},
             {"transport_error_counts", d.at("transport_error_counts")},
             {"elapsed_seconds", d.at("elapsed_seconds")}, {"success_latency_ms", d.at("success_latency_ms")}});
-        if (paired) inputs.back()["started_second_utc"] = run.started_second;
+        if (paired) {
+            inputs.back()["started_second_utc"] = run.started_second;
+            inputs.back()["file_sha256"] = run.file_sha256;
+        }
         if (d.contains("verification")) inputs.back()["verification"] = d.at("verification");
         if (d.contains("endpoint_results") && !d.at("endpoint_results").is_null())
             inputs.back()["endpoint_results"] = d.at("endpoint_results");
@@ -797,7 +801,7 @@ ComparisonReport compare_saved_results(const CompareOptions& options, bool for_p
         for (auto pair : {std::pair{&options.baseline, &baseline}, std::pair{&options.candidate, &candidate}}) {
             for (const auto& path : *pair.first) {
                 context = path;
-                auto run = read_run(path, bytes, identities);
+                auto run = read_run(path, bytes, identities, for_paired_analysis);
                 validate(run);
                 // Failed preflights have zero timing data and can genuinely be identical
                 // within one timestamp second. They already exclude the whole campaign.
