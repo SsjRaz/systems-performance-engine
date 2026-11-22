@@ -73,6 +73,7 @@ nlohmann::json read_config_json(const std::string& path, ConfigFile kind) {
     const char* label = "workload";
     if (kind == ConfigFile::private_headers) label = "headers";
     if (kind == ConfigFile::verification) label = "verification";
+    if (kind == ConfigFile::experiment) label = "experiment";
     const bool private_input = kind == ConfigFile::private_headers || kind == ConfigFile::verification;
     return parse_bounded_json(read_file(path, label, private_input, 64 * 1024), label, 8, 65536);
 }

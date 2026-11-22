@@ -1,6 +1,6 @@
 # Roadmap
 
-The project is building toward reproducible comparisons of backend service versions. Native execution and descriptive saved-result comparison are implemented; reliable regression decisions require further measurement evidence.
+The project is building toward reproducible comparisons of backend service versions. The native runner supports descriptive comparison and advisory paired regression analysis. CI gating needs further calibration.
 
 | Milestone | Status | Outcome |
 | --- | --- | --- |
@@ -14,7 +14,7 @@ The project is building toward reproducible comparisons of backend service versi
 | Fixed-arrival-rate scheduling | Implemented | Monotonic deadlines, bounded admission, dispatch-delay measurements and explicit missed arrivals. |
 | Two-endpoint GET workloads | Implemented | Reproducible weighted assignment on one origin with per-path outcomes, latency and overload accounting. |
 | Bounded HTTP methods and request bodies | Implemented | HEAD and single-target writes with private payloads, explicit budgets for repeated writes, and wire-level tests. |
-| Statistical comparison | Planned | Validated uncertainty methods and practical decision rules based on experimental runs or JVM blocks. |
+| Statistical comparison | Implemented, advisory | Exact paired median intervals on verified independent server pairs. Held-out single-host false-alarm and detection counts are recorded. |
 | Workload and CI extensions | Under consideration | Broader HTTP workloads, automation, and result export. |
 
 ## Implemented foundation
@@ -46,11 +46,11 @@ Completion requires reproducible commands, retained evidence, and documented lim
 
 `spe compare` consumes supported native SPE results from any HTTP backend. It checks workload and engine compatibility, reports percentage differences and per-run variability, and suppresses performance deltas for failed or incomplete experiments. It produces terminal and versioned JSON reports without starting applications. Percentile summaries describe per-run percentiles rather than a pooled request distribution.
 
-## Planned: statistical comparison
+## Advisory statistical comparison
 
-Uncertainty estimates and regression, improvement, or inconclusive outcomes require a method validated with unchanged controls and known changes. Experimental runs or JVM blocks must be the units of analysis; file count alone does not establish independence.
+The paired analysis accepts a prespecified metric and practical threshold, requires complete native preflights and uses independent server pairs as its units. The first held-out results cover injected CPU and delay changes, unchanged controls and contention. [Method](REGRESSION.md) · [Calibration evidence](../benchmarks/oss/DETECTOR-RESULTS.md)
 
-Statistical methods, practical thresholds, and minimum evidence requirements are not yet selected.
+Multi-host replication and detection near the chosen threshold remain outstanding. Automated gating is disabled.
 
 ## Later capabilities
 

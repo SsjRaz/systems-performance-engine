@@ -8,7 +8,7 @@ Help backend developers understand how code changes affect service performance b
 
 ## Current capabilities
 
-**Early development.** The native runner and saved-result comparison are implemented. Trace replay and statistical regression detection are planned.
+**Early development.** The native runner supports untimed response verification, descriptive saved-result comparison and advisory paired regression analysis. Trace replay remains planned.
 
 - Run GET and HEAD with connection reuse. POST, PUT, PATCH, and DELETE use a fresh connection for each write and default to one request. POST, PUT, and PATCH accept a private binary payload up to 64 KiB. [HTTP methods and bodies](docs/USAGE.md#http-methods-and-request-bodies)
 - Set a target arrival rate and duration with `--rate` and `--duration-ms`. The runner measures dispatch delay and counts arrivals missed under overload. [Fixed-rate scheduling](docs/USAGE.md#fixed-rate-scheduling)
@@ -57,12 +57,13 @@ This is an unchanged-service control. Both labels refer to the same code, so the
 
 The default closed-loop workload refills each client slot on completion, so the offered load falls as responses slow down. A fixed-rate workload schedules arrivals independently. Check delivered and missed counts before interpreting its latency percentiles. Latency is measured at the client and includes connection setup when needed.
 
-In controlled Spring Petclinic experiments, SPE and k6 both observed a slowdown when the service added a 5 ms delay. Removing a redundant owner lookup produced a much smaller difference that unchanged-code variation could explain. SPE reports observed differences and leaves regression judgments to the reader. [Experiment results and controls](docs/VALIDATION.md#executed-local-timing-observations)
+In controlled Spring Petclinic experiments, SPE and k6 both observed a slowdown when the service added a 5 ms delay. Removing a redundant owner lookup produced a much smaller difference that unchanged-code variation could explain. The historical saved results provide descriptive differences. New prespecified experiments with native preflights can use paired regression analysis. [Experiment results and controls](docs/VALIDATION.md#executed-local-timing-observations)
 
 ## Documentation
 
 - Build options, authentication, CLI flags, and result fields — [Usage reference](docs/USAGE.md)
 - Petclinic setup, k6 comparisons, and recorded findings — [Measurement validation](docs/VALIDATION.md)
+- Paired regression analysis, held-out false-alarm and detection measurements — [Method](docs/REGRESSION.md) · [Results](benchmarks/oss/DETECTOR-RESULTS.md)
 - Federated search and Git repository reads on pinned application releases — [Meilisearch and Gitea benchmarks](benchmarks/oss/README.md)
 - The event loop, connection handling, and measurement boundaries — [Architecture](docs/ARCHITECTURE.md)
 - Work in progress and planned milestones — [Roadmap](docs/ROADMAP.md)
