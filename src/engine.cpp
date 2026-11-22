@@ -2,6 +2,7 @@
 #include "spe/schedule.hpp"
 #include "spe/tls.hpp"
 #include "spe/headers.hpp"
+#include "spe/body.hpp"
 
 #include <curl/curl.h>
 
@@ -90,6 +91,24 @@ Outcome classify(CURLcode code, long status, bool body_limit_hit) {
     if (code != CURLE_OK || status < 100 || status >= 600) return Outcome::network_error;
     return status >= 200 && status < 300 ? Outcome::success : Outcome::http_error;
 }
+
+void configure_method(CURL* easy, const std::string& method, const std::string& body) {
+    if (method == "GET") {
+        check(curl_easy_setopt(easy, CURLOPT_HTTPGET, 1L));
+    } else if (method == "HEAD") {
+        check(curl_easy_setopt(easy, CURLOPT_NOBODY, 1L));
+    } else {
+        // libcurl may replay a transfer on a stale reused connection. A write
+        // gets a fresh HTTP/1.1 connection even when its easy handle is recycled.
+        check(curl_easy_setopt(easy, CURLOPT_FRESH_CONNECT, 1L));
+        check(curl_easy_setopt(easy, CURLOPT_FORBID_REUSE, 1L));
+        if (method_accepts_body(method)) {
+            check(curl_easy_setopt(easy, CURLOPT_POSTFIELDSIZE_LARGE, static_cast<curl_off_t>(body.size())));
+            check(curl_easy_setopt(easy, CURLOPT_POSTFIELDS, body.c_str()));
+        }
+        check(curl_easy_setopt(easy, CURLOPT_CUSTOMREQUEST, method.c_str()));
+    }
+}
 }
 
 RunResult run(const Config& config, const std::function<bool()>& stop_requested) {
@@ -111,6 +130,13 @@ RunResult run(const Config& config, const std::function<bool()>& stop_requested)
     // Immutable bundle storage outlives all easy handles. No trust material/path is exported.
     auto ca_bundle = config.ca_file.empty() ? CaBundle{} : load_ca_bundle(config.ca_file);
     auto headers = config.headers_file.empty() ? PreparedHeaders{} : load_headers_file(config.headers_file);
+    const auto request_body = config.body_file.empty() ? std::string{} : load_request_body(config.body_file);
+    if (method_accepts_body(config.method)) {
+        // Suppress automatic 100-continue negotiation and its 417 retry path.
+        headers.append_line("Expect:");
+        if (!std::binary_search(headers.names.begin(), headers.names.end(), "content-type"))
+            headers.append_line("Content-Type: application/octet-stream");
+    }
     curl_blob ca_blob{ca_bundle.bytes.data(), ca_bundle.bytes.size(), CURL_BLOB_NOCOPY};
     const auto user_agent = std::string("systems-performance-engine/") + std::string(version());
     const auto budget = config.request_budget();
@@ -131,7 +157,7 @@ RunResult run(const Config& config, const std::function<bool()>& stop_requested)
         check(curl_easy_setopt(easy, CURLOPT_URL, endpoint_urls.empty() ? config.url.c_str() : endpoint_urls.front().c_str()));
         check(curl_easy_setopt(easy, CURLOPT_PROTOCOLS_STR, https ? "https" : "http"));
         check(curl_easy_setopt(easy, CURLOPT_HTTP_VERSION, static_cast<long>(CURL_HTTP_VERSION_1_1)));
-        check(curl_easy_setopt(easy, CURLOPT_HTTPGET, 1L));
+        configure_method(easy, config.method, request_body);
         check(curl_easy_setopt(easy, CURLOPT_FOLLOWLOCATION, 0L));
         check(curl_easy_setopt(easy, CURLOPT_PROXY, ""));
         check(curl_easy_setopt(easy, CURLOPT_NETRC, static_cast<long>(CURL_NETRC_IGNORED)));
@@ -166,7 +192,7 @@ RunResult run(const Config& config, const std::function<bool()>& stop_requested)
     check(curl_multi_setopt(multi.get(), CURLMOPT_MAXCONNECTS, static_cast<long>(limit)));
     check(curl_multi_setopt(multi.get(), CURLMOPT_PIPELINING, CURLPIPE_NOTHING));
 
-    Measurements measurements(config, ca_bundle.sha256, headers.names);
+    Measurements measurements(config, ca_bundle.sha256, headers.names, request_body.size());
     std::size_t in_flight = 0;
     std::size_t peak = 0;
     std::vector<Slot*> ready;

@@ -54,8 +54,24 @@ std::uint64_t FixedRate::planned_arrivals() const {
     return count;
 }
 
+bool method_accepts_body(std::string_view method) {
+    return method == "POST" || method == "PUT" || method == "PATCH";
+}
+
+bool method_reuses_connections(std::string_view method) {
+    return method == "GET" || method == "HEAD";
+}
+
 void validate_config(const Config& config) {
     const auto budget = config.request_budget();
+    if (!method_reuses_connections(config.method) && !method_accepts_body(config.method) && config.method != "DELETE")
+        throw std::invalid_argument("method must be GET, HEAD, POST, PUT, PATCH or DELETE");
+    if (!method_reuses_connections(config.method) && budget > 1 && !config.repeat_writes && !config.fixed_rate)
+        throw std::invalid_argument("repeated closed-loop writes require an explicit request budget");
+    if (!config.body_file.empty() && !method_accepts_body(config.method))
+        throw std::invalid_argument("--body-file requires POST, PUT or PATCH");
+    if (config.body_file.size() > 4096 || config.body_file.find('\0') != std::string::npos)
+        throw std::invalid_argument("invalid request body file path");
     if (budget == 0 || budget > max_requests) {
         throw std::invalid_argument("--requests must be in [1, 1000000]");
     }
@@ -88,6 +104,7 @@ void validate_config(const Config& config) {
         throw std::invalid_argument("URL fragments and port zero are not supported");
     }
     if (config.mix) {
+        if (config.method != "GET") throw std::invalid_argument("endpoint mixes require GET");
         if (!config.fixed_rate) throw std::invalid_argument("endpoint mixes require --rate and --duration-ms");
         std::string_view origin = config.url;
         if (origin.ends_with('/')) origin.remove_suffix(1);
@@ -119,7 +136,8 @@ CliOptions parse_cli(std::span<const std::string_view> arguments) {
             options.version = true;
         } else if (arg.starts_with('-')) {
             if (arg != "--requests" && arg != "--rate" && arg != "--duration-ms" && arg != "--concurrency" && arg != "--timeout-ms" &&
-                arg != "--max-body-bytes" && arg != "--json" && arg != "--ca-file" && arg != "--headers-file" && arg != "--workload-file") {
+                arg != "--max-body-bytes" && arg != "--json" && arg != "--ca-file" && arg != "--headers-file" &&
+                arg != "--workload-file" && arg != "--method" && arg != "--body-file") {
                 throw std::invalid_argument("unknown option: " + std::string(arg));
             }
             if (!seen.insert(arg).second) {
@@ -129,6 +147,15 @@ CliOptions parse_cli(std::span<const std::string_view> arguments) {
                 throw std::invalid_argument("missing value for " + std::string(arg));
             }
             const auto value = arguments[i];
+            if (arg == "--method") {
+                options.config.method = value;
+                continue;
+            }
+            if (arg == "--body-file") {
+                if (value.empty() || value.starts_with('-')) throw std::invalid_argument("--body-file requires a file path");
+                options.config.body_file = value;
+                continue;
+            }
             if (arg == "--workload-file") {
                 if (value.empty() || value.starts_with('-') || value.size() > 4096 || value.find('\0') != value.npos)
                     throw std::invalid_argument("--workload-file requires a configuration file path");
@@ -176,6 +203,10 @@ CliOptions parse_cli(std::span<const std::string_view> arguments) {
         options.config.fixed_rate = rate;
     }
     if (!options.help && !options.version) {
+        if (!method_reuses_connections(options.config.method)) {
+            options.config.repeat_writes = seen.contains("--requests") || options.config.fixed_rate.has_value();
+            if (!options.config.repeat_writes) options.config.requests = 1;
+        }
         if (!workload_file.empty()) options.config.mix = load_workload_file(workload_file);
         validate_config(options.config);
     }
@@ -184,7 +215,9 @@ CliOptions parse_cli(std::span<const std::string_view> arguments) {
 
 std::string_view usage() {
     return "Usage: spe <http[s]://host[:port]/path> [options]\n"
-           "  --requests N        Total logical requests, 1..1000000 (default 1000)\n"
+           "  --method VERB       GET (default), HEAD, POST, PUT, PATCH or DELETE\n"
+           "  --body-file PATH    Private binary payload for POST/PUT/PATCH, up to 64 KiB\n"
+           "  --requests N        Total logical requests, 1..1000000 (default 1000 for GET/HEAD, 1 for writes)\n"
            "  --rate N            Fixed arrivals/second (positive integer); requires --duration-ms instead of --requests\n"
            "  --duration-ms N     Arrival window, 1..3600000 ms; at most 1000000 planned arrivals\n"
            "  --workload-file PATH  Two weighted endpoint paths (JSON); requires a target origin and fixed rate\n"

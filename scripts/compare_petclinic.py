@@ -162,8 +162,10 @@ def validate_result(result, requests, concurrency, timeout_ms, url):
     if result["schema_version"] >= 4 and (w.get("model") != "closed_loop" or w["arrival_schedule"] is not None
                                          or result["scheduling"] is not None):
         raise RuntimeError("The Petclinic experiment protocol requires closed-loop results")
-    if result["schema_version"] == 5 and (w["endpoint_mix"] is not None or result["endpoint_results"] is not None):
+    if result["schema_version"] >= 5 and (w["endpoint_mix"] is not None or result["endpoint_results"] is not None):
         raise RuntimeError("The Petclinic experiment protocol requires a single endpoint")
+    if result["schema_version"] >= 6 and (w["method"] != "GET" or w["request_body_bytes"] != 0):
+        raise RuntimeError("The Petclinic experiment protocol requires GET with no request body")
     if result["schema_version"] >= 3 and w.get("headers") != {"names": [], "values": "redacted"}:
         raise RuntimeError("The Petclinic helper does not support redacted custom-header workloads; use native compare with explicit acknowledgement")
     if (w["url"], w["requests"], w["concurrency"], w["timeout_ms"]) != (url, requests, concurrency, timeout_ms):
@@ -327,11 +329,11 @@ def compare_results(directory):
         reference = measured[0][0]
         workload_settings = reference["workload"]
         for result in [r for block in measured for r in block]:
-            if result["schema_version"] not in (1, 2, 3, 4, 5) or result["schema_version"] != reference["schema_version"] or result["workload"] != workload_settings or result["engine"] != reference["engine"]:
+            if result["schema_version"] not in (1, 2, 3, 4, 5, 6) or result["schema_version"] != reference["schema_version"] or result["workload"] != workload_settings or result["engine"] != reference["engine"]:
                 raise RuntimeError("Measured workloads or engine builds differ")
         for result in warmups:
             expected = dict(workload_settings, requests=protocol["warmup_requests"])
-            if result["schema_version"] not in (1, 2, 3, 4, 5) or result["schema_version"] != reference["schema_version"] or result["workload"] != expected or result["engine"] != reference["engine"]:
+            if result["schema_version"] not in (1, 2, 3, 4, 5, 6) or result["schema_version"] != reference["schema_version"] or result["workload"] != expected or result["engine"] != reference["engine"]:
                 raise RuntimeError("Warm-up workloads or engine builds differ")
         report["checks"][stage] = "pass"
 

@@ -72,6 +72,7 @@ struct RunResult {
     std::string engine_error;
     std::string ca_bundle_sha256;
     std::vector<std::string> header_names;
+    std::size_t request_body_bytes = 0;
     bool interrupted = false;
     std::size_t peak_in_flight = 0;
     double elapsed_seconds = 0;
@@ -82,7 +83,8 @@ struct RunResult {
 // Owned and mutated exclusively by the event-loop thread.
 class Measurements {
 public:
-    explicit Measurements(const Config& config, std::string ca_bundle_sha256 = {}, std::vector<std::string> header_names = {});
+    explicit Measurements(const Config& config, std::string ca_bundle_sha256 = {},
+                          std::vector<std::string> header_names = {}, std::size_t request_body_bytes = 0);
     void start(std::optional<double> dispatch_delay_ms = {}, std::size_t endpoint = 0);
     void miss_arrivals(std::uint64_t expired, bool at_capacity, std::uint64_t first = 0);
     void record(Outcome outcome, double duration_ms, long http_status = 0, int transport_error = 0, std::size_t endpoint = 0);

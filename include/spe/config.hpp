@@ -12,6 +12,10 @@
 namespace spe {
 inline constexpr std::uint64_t max_requests = 1'000'000;
 inline constexpr std::size_t max_concurrency = 1024;
+inline constexpr std::size_t max_request_body_bytes = 64 * 1024;
+
+bool method_accepts_body(std::string_view method);
+bool method_reuses_connections(std::string_view method);
 
 struct FixedRate {
     std::uint64_t per_second;
@@ -30,6 +34,10 @@ struct Config {
     std::string headers_file;
     std::optional<FixedRate> fixed_rate;
     std::optional<EndpointMix> mix;
+    std::string method = "GET";
+    std::string body_file;
+    // Set only when the caller explicitly chose a repeated write budget.
+    bool repeat_writes = false;
 
     std::uint64_t request_budget() const {
         return fixed_rate ? fixed_rate->planned_arrivals() : requests;

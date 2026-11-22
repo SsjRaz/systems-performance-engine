@@ -8,9 +8,9 @@ Help backend developers understand how code changes affect service performance b
 
 ## Current capabilities
 
-**Early development.** The native runner and saved-result comparison are implemented. Additional HTTP methods, request bodies, trace replay, and statistical regression detection are planned.
+**Early development.** The native runner and saved-result comparison are implemented. Trace replay and statistical regression detection are planned.
 
-- Run concurrent HTTP/1.1 GET requests with connection reuse and configurable limits on requests, concurrency, timeouts, and response size.
+- Run GET and HEAD with connection reuse. POST, PUT, PATCH, and DELETE use a fresh connection for each write and default to one request. POST, PUT, and PATCH accept a private binary payload up to 64 KiB. [HTTP methods and bodies](docs/USAGE.md#http-methods-and-request-bodies)
 - Set a target arrival rate and duration with `--rate` and `--duration-ms`. The runner measures dispatch delay and counts arrivals missed under overload. [Fixed-rate scheduling](docs/USAGE.md#fixed-rate-scheduling)
 - Run two weighted GET paths on one origin and see throughput, latency and missed arrivals for each path. [Endpoint mixes](docs/USAGE.md#two-endpoint-workloads)
 - Test authenticated endpoints with verified HTTPS, optional custom CA trust, and headers loaded from a private file. Reports omit header values and retain the target URL, including its query.

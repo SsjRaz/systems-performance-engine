@@ -99,7 +99,7 @@ class ComparisonTests(unittest.TestCase):
     def compare(self, a, b, *, expected=0, extra=()):
         process = self.command(["compare", a, b, *extra, "--json", "-"], expected)
         report = json.loads(process.stdout, parse_constant=lambda value: self.fail(f"nonfinite output {value}"))
-        self.assertEqual(report["schema_version"], 5)
+        self.assertEqual(report["schema_version"], 6)
         self.assertEqual(report["kind"], "spe_comparison")
         self.assertEqual(report["statistical_verdict"], "not_assessed")
         self.assertIn("Statistical verdict: NOT ASSESSED.", process.stderr)
@@ -200,6 +200,21 @@ class ComparisonTests(unittest.TestCase):
         legacy = numerical_fixture()
         legacy["workload"]["url"] = legacy["workload"]["url"].replace("http://", "https://")
         self.compare(self.save(legacy), self.save(legacy), expected=2)
+
+    def test_schema_five_remains_get_only(self):
+        legacy = header_fixture()
+        legacy.update(schema_version=5, scheduling=None, endpoint_results=None)
+        legacy["engine"]["version"] = "0.5.0"
+        legacy["workload"].update(arrival_schedule=None, endpoint_mix=None)
+        a = self.save(legacy)
+        self.compare(a, self.save(legacy))
+        current = copy.deepcopy(legacy)
+        current["schema_version"] = 6
+        current["engine"]["version"] = "0.6.0"
+        current["workload"]["request_body_bytes"] = 0
+        self.compare(a, self.save(current), expected=2)
+        legacy["workload"]["method"] = "POST"
+        self.compare(a, self.save(legacy), expected=2)
 
     def test_fixed_rate_contract_and_rejections(self):
         closed = header_fixture()

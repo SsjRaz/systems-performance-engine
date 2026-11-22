@@ -177,7 +177,7 @@ class HttpsIntegration(unittest.TestCase):
         self.assertEqual(process.returncode,expected,(args,stdout,stderr))
         result=json.loads(stdout)
         prefix.with_suffix('.json').write_text(json.dumps(result,indent=2)+'\n')
-        self.assertEqual(result['schema_version'],5)
+        self.assertEqual(result['schema_version'],6)
         HttpIntegration.check_accounting(self,result)
         tls=result['workload']['tls']
         self.assertEqual(tls['verify_peer'],True)
@@ -367,7 +367,7 @@ class HttpsIntegration(unittest.TestCase):
             self.compare('origin-rejected','compare-a','compare-b',expected=2)
             report=self.compare('https-compatible','compare-a','compare-b',extra=['--allow-origin-change'])
             self.assertEqual(report['status'],'descriptive_comparison')
-            self.assertEqual(report['input_result_schema_version'],5)
+            self.assertEqual(report['input_result_schema_version'],6)
             with RunningService() as plain:
                 command=[str(self.engine),plain.url+'/ok?delay_ms=5','--requests','12','--concurrency','2','--timeout-ms','2000',
                          '--json',str(self.artifacts/'compare-http.json')]
