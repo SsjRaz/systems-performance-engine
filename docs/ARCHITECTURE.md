@@ -33,11 +33,11 @@ libcurl supplies HTTP parsing, TLS, URL handling, connection pooling, and the as
 
 `spe::run` executes on the calling thread. All HTTP handle access and measurement updates occur there. libcurl's asynchronous DNS backend may use resolver helper threads.
 
-A run allocates a fixed pool of reusable easy handles, limited to the smaller of request count and configured concurrency. The default closed-loop model refills slots on completion. Fixed-rate mode keeps free handles in a preallocated list. It polls until socket activity, the next arrival or window end, with a 50 ms cancellation check. A single cursor advances past expired deadlines. The scheduler admits at most the newest due arrival and drains active handles after the window closes.
+A run allocates a fixed pool of reusable easy handles, limited to the smaller of request count and configured concurrency. The default closed-loop model refills slots on completion. Fixed-rate mode keeps free handles in a preallocated list. While transfers are active it polls for socket activity up to the next arrival or window end. When idle it sleeps to the monotonic deadline. Both waits are capped at 50 ms to observe cancellation. A single cursor advances past expired deadlines. The scheduler admits at most the newest due arrival and drains active handles after the window closes.
 
 RAII owners release easy and multi handles on normal return or exceptions. Active handles are removed before the multi handle is destroyed. Response bodies are streamed through a discard callback with a per-request byte limit. Connection limits and sample storage are bounded by configuration; the sample arrays hold up to roughly 16 MB of request durations plus 8 MB of dispatch delays in fixed-rate mode at the request-count cap, excluding transport and container overhead. Mixed runs reserve up to 16 MB more for exact per-endpoint latency samples.
 
-Signal handlers set a `sig_atomic_t` flag. The event loop observes cancellation at dispatch/completion boundaries and after poll waits capped at 50 ms. Shutdown collects known completions, cancels active work, and reports the remaining undispatched budget. Server-side processing can continue after client cancellation.
+Signal handlers set a `sig_atomic_t` flag. The event loop observes cancellation at dispatch/completion boundaries and after waits capped at 50 ms. Shutdown collects known completions, cancels active work, and reports the remaining undispatched budget. Server-side processing can continue after client cancellation.
 
 ## Transport behavior
 
