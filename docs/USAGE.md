@@ -1,5 +1,19 @@
 # Build and CLI reference
 
+## Untimed response verification
+
+Use `--verify-response policy.json` to send one preflight request per endpoint. The owner-only file declares a public `policy_id` and rules in workload order. Choose an ID safe to publish and change it when assertions change.
+
+```json
+{"policy_id":"catalog-v1","endpoints":[{"fields":{"/estimatedTotalHits":2000,"/hits/0/available":true}}]}
+```
+
+Each rule accepts 1–16 JSON Pointers to exact scalar values, or a single `sha256` containing the lowercase SHA-256 of the response bytes. JSON checks both type and value, including integer versus floating point. A GET mix needs one rule per endpoint. Probes reuse the configured request, immutable body, private headers, timeout and TLS trust. GET and HEAD permit probes. POST requires `--replay-safe-post`, even with one timed request. The acknowledgement permits one additional replay-safe POST. PUT, PATCH and DELETE reject probes.
+
+The policy is limited to 64 KiB and eight levels. Capture stops at the smaller of the configured body limit and 256 KiB. Response JSON allows 32 levels and 16,384 parser events and rejects duplicate keys. Only the public policy ID, counts and bounded outcome are exported. A failed probe stops before timing and exits 3. Probes use separate connections and counters and may warm the application cache. Their success establishes correctness for the preflight responses only.
+
+Unprobed runs retain schema 6 and print correctness as unchecked. Probed runs use schema 7 and record `verification.scope=untimed_preflight`. Native comparison continues to read earlier schemas and requires matching contracts and policy IDs. ID equality records the experimenter's assertion that the private rules matched.
+
 Commands below run from the repository root. Platform coverage is listed in the [README](../README.md#platforms).
 
 ## Build and test

@@ -3,6 +3,7 @@
 #include "spe/tls.hpp"
 #include "spe/headers.hpp"
 #include "spe/body.hpp"
+#include "verification.hpp"
 
 #include <curl/curl.h>
 
@@ -193,7 +194,14 @@ RunResult run(const Config& config, const std::function<bool()>& stop_requested)
     check(curl_multi_setopt(multi.get(), CURLMOPT_MAXCONNECTS, static_cast<long>(limit)));
     check(curl_multi_setopt(multi.get(), CURLMOPT_PIPELINING, CURLPIPE_NOTHING));
 
+    std::optional<Verification> verification;
+    if (!config.verification_file.empty())
+        verification = preflight(slots.front()->easy.get(), config, endpoint_urls, stop_requested);
     Measurements measurements(config, ca_bundle.sha256, headers.names, request_body.size());
+    if (verification && !verification->failure.empty()) {
+        const bool cancelled = verification->failure == "cancelled";
+        return measurements.finish(0, 0, cancelled, {}, std::move(verification));
+    }
     std::size_t in_flight = 0;
     std::size_t peak = 0;
     std::vector<Slot*> ready;
@@ -312,6 +320,6 @@ RunResult run(const Config& config, const std::function<bool()>& stop_requested)
             std::chrono::duration<double, std::milli>(Clock::now() - slot->started).count(), 0, 0, slot->endpoint);
     }
     const auto elapsed = std::chrono::duration<double>(Clock::now() - begin).count();
-    return measurements.finish(elapsed, peak, interrupted, std::move(engine_error));
+    return measurements.finish(elapsed, peak, interrupted, std::move(engine_error), std::move(verification));
 }
 }

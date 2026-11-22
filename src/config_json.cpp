@@ -44,17 +44,17 @@ std::string load_request_body(const std::string& path) {
     return read_file(path, "request body", true, max_request_body_bytes, true);
 }
 
-nlohmann::json read_config_json(const std::string& path, ConfigFile kind) {
+nlohmann::json parse_bounded_json(std::string_view bytes, std::string_view kind, int max_depth, std::size_t max_events) {
     using Json = nlohmann::json;
-    const std::string label = kind == ConfigFile::private_headers ? "headers" : "workload";
-    const auto bytes = read_file(path, label, kind == ConfigFile::private_headers, 64 * 1024);
+    const std::string label(kind);
     // The JSON lexer treats a raw NUL as end-of-input.
     if (bytes.find('\0') != std::string::npos) throw std::invalid_argument("invalid " + label + " JSON");
     Json document;
     try {
         std::vector<std::set<std::string>> keys;
+        std::size_t events = 0;
         const auto callback = [&](int depth, Json::parse_event_t event, Json& value) {
-            if (depth > 8) throw std::invalid_argument(label + " JSON nesting exceeds 8 levels");
+            if (depth > max_depth || ++events > max_events) throw std::invalid_argument("JSON complexity limit");
             if (event == Json::parse_event_t::object_start) keys.emplace_back();
             if (event == Json::parse_event_t::object_end) keys.pop_back();
             if (event == Json::parse_event_t::key && !keys.back().insert(value.get<std::string>()).second)
@@ -67,5 +67,13 @@ nlohmann::json read_config_json(const std::string& path, ConfigFile kind) {
         throw std::invalid_argument("invalid " + label + " JSON (syntax, duplicate keys, encoding or nesting)");
     }
     return document;
+}
+
+nlohmann::json read_config_json(const std::string& path, ConfigFile kind) {
+    const char* label = "workload";
+    if (kind == ConfigFile::private_headers) label = "headers";
+    if (kind == ConfigFile::verification) label = "verification";
+    const bool private_input = kind == ConfigFile::private_headers || kind == ConfigFile::verification;
+    return parse_bounded_json(read_file(path, label, private_input, 64 * 1024), label, 8, 65536);
 }
 }
