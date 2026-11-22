@@ -766,7 +766,7 @@ std::string_view compare_usage() {
            "  --allow-redacted-headers  Acknowledge unverifiable header values; recorded names must still match\n"
            "  --allow-redacted-body     Acknowledge unverifiable payload contents; lengths must still match\n"
            "  --help, -h             Show comparison help\n"
-           "Native SPE measurement contracts 0.1.0/schema 1 through 0.6.0/schema 6; contracts cannot be mixed.\n"
+           "Native SPE measurement contracts 1 through 7. All inputs must share a contract.\n"
            "Limits: 100 files/group, 1 MiB/file, 32 MiB total, 32 JSON nesting levels.\n"
            "Exit: 0 descriptive comparison; 3 insufficient complete-success evidence; 2 rejected input; 1 output/system error.\n";
 }
