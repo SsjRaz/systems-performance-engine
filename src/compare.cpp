@@ -1,4 +1,5 @@
 #include "spe/compare.hpp"
+#include "spe/result.hpp"
 #include "config_json.hpp"
 #include "spe/config.hpp"
 #include "spe/tls.hpp"
@@ -341,17 +342,40 @@ void validate_endpoints(const Json& d, const EndpointMix& mix, double elapsed, s
     }
 }
 
+bool validate_verification(const Json& d, const Config& config) {
+    const auto& v = d.at("verification");
+    keys(v, {"scope", "policy_id", "status", "attempted", "passed", "failure"}, "response verification");
+    require(v.at("scope") == "untimed_preflight" && valid_public_id(string(v.at("policy_id"), "policy_id", 80)),
+            "invalid verification contract");
+    require(method_reuses_connections(config.method) || config.method == "POST", "unsupported probe method");
+    const auto planned = config.mix ? EndpointMix::size : 1U;
+    const auto attempted = integer(v.at("attempted"), "attempted probes", planned);
+    const auto passed = integer(v.at("passed"), "passed probes", attempted);
+    if (v.at("status") == "passed") {
+        require(v.at("failure").is_null() && passed == planned, "successful verification lacks complete probes");
+        return true;
+    }
+    const std::set<std::string> reasons = {"cancelled", "response_limit", "transport_error", "timeout",
+                                           "tls_error", "http_error", "content_mismatch", "invalid_json"};
+    const auto failure = string(v.at("failure"), "probe failure", 32);
+    require(v.at("status") == "failed" && reasons.contains(failure) && passed < planned &&
+            (attempted == passed + 1 || (failure == "cancelled" && attempted == passed)) &&
+            d.at("counts").at("started") == 0 && d.at("elapsed_seconds") == 0 &&
+            (failure != "cancelled" || d.at("interrupted") == true), "inconsistent failed verification");
+    return false;
+}
+
 void validate(Run& run) {
     auto& d = run.document;
-    const auto schema = integer(d.at("schema_version"), "schema_version", 6);
+    const auto schema = integer(d.at("schema_version"), "schema_version", 7);
     require(schema >= 1, "unsupported native result schema");
     keys(d, {"schema_version", "engine", "started_at_utc", "workload", "counts", "http_status_counts",
         "transport_error_counts", "elapsed_seconds", "completed_throughput_rps", "successful_throughput_rps",
         "peak_in_flight", "interrupted", "engine_error", "success_latency_ms", "completed_latency_ms"}, "native result",
-        {schema >= 4 ? "scheduling" : "", schema >= 5 ? "endpoint_results" : ""});
+        {schema >= 4 ? "scheduling" : "", schema >= 5 ? "endpoint_results" : "", schema >= 7 ? "verification" : ""});
     const auto& engine = d.at("engine");
     keys(engine, {"version", "source_revision", "compiler", "build_type", "build_flags", "sanitizers", "platform", "libcurl"}, "native engine metadata");
-    constexpr std::array versions = {"0.1.0", "0.2.0", "0.3.0", "0.4.0", "0.5.0", "0.6.0"};
+    constexpr std::array versions = {"0.1.0", "0.2.0", "0.3.0", "0.4.0", "0.5.0", "0.6.0", "0.6.0"};
     require(engine.at("version") == versions[schema - 1], "unsupported native engine/schema measurement contract");
     for (auto it = engine.begin(); it != engine.end(); ++it)
         string(it.value(), it.key(), 8192, it.key() == "source_revision" || it.key() == "build_flags");
@@ -451,10 +475,11 @@ void validate(Run& run) {
     require(d.at("interrupted").is_boolean(), "interrupted must be boolean");
     const auto& error = d.at("engine_error");
     if (!error.is_null()) string(error, "engine_error", 65536);
-    const bool stopped = d.at("interrupted") == true || !error.is_null();
+    const bool probe_failed = schema >= 7 && !validate_verification(d, config);
+    const bool stopped = d.at("interrupted") == true || !error.is_null() || probe_failed;
     const auto missed = config.fixed_rate ? validate_scheduling(d, *config.fixed_rate, elapsed, stopped) : 0;
     const bool incomplete = count("cancelled") != 0 || count("not_started") != missed;
-    require(!incomplete || d.at("interrupted") == true || !error.is_null(), "incomplete run has no interruption or engine error");
+    require(!incomplete || stopped, "incomplete run has no interruption or engine error");
     validate_latencies(d, elapsed, peak);
     if (config.mix) validate_endpoints(d, *config.mix, elapsed, peak, https);
     const auto& statuses = d.at("http_status_counts");
@@ -486,7 +511,8 @@ void validate(Run& run) {
     require(transport_total <= failures - count("http_errors"), "transport error counts exceed failed transfers");
     require(tls_total == count("tls_errors"), "TLS error codes disagree with TLS outcomes");
     run.clean = !incomplete && d.at("interrupted") == false && error.is_null() && count("successes") == config.requests;
-    if (incomplete || stopped) run.state = "incomplete_or_interrupted";
+    if (probe_failed) run.state = "verification_failed";
+    else if (incomplete || stopped) run.state = "incomplete_or_interrupted";
     else if (missed) run.state = "missed_arrivals";
     else run.state = run.clean ? "complete_success" : "completed_with_failures";
 }
@@ -564,6 +590,7 @@ Json group(const std::vector<Run>& runs) {
             {"url", d.at("workload").at("url")}, {"counts", d.at("counts")}, {"engine_error", d.at("engine_error")},
             {"transport_error_counts", d.at("transport_error_counts")},
             {"elapsed_seconds", d.at("elapsed_seconds")}, {"success_latency_ms", d.at("success_latency_ms")}});
+        if (d.contains("verification")) inputs.back()["verification"] = d.at("verification");
         if (d.contains("endpoint_results") && !d.at("endpoint_results").is_null())
             inputs.back()["endpoint_results"] = d.at("endpoint_results");
         if (d.at("workload").at("model") == "fixed_arrival_rate") {
@@ -773,6 +800,9 @@ ComparisonReport compare_saved_results(const CompareOptions& options) {
         bool origins_differ = false;
         for (auto runs : {&baseline, &candidate}) for (const auto& run : *runs) {
             require(run.document.at("schema_version") == reference.document.at("schema_version"), "result measurement contracts differ");
+            if (reference.document.contains("verification"))
+                require(run.document.at("verification").at("policy_id") == reference.document.at("verification").at("policy_id"),
+                        "response verification policies differ");
             require(run.document.at("engine") == reference.document.at("engine"), "recorded engine builds differ; use one engine build for all runs");
             auto settings = run.document.at("workload"); settings.erase("url");
             require(settings == expected, "workload settings differ (request budget, concurrency, timeout, body limit or execution policy)");

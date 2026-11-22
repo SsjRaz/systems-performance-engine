@@ -36,6 +36,8 @@ struct Config {
     std::optional<EndpointMix> mix;
     std::string method = "GET";
     std::string body_file;
+    std::string verification_file;
+    bool replay_safe_post = false;
     // Set only when the caller explicitly chose a repeated write budget.
     bool repeat_writes = false;
 

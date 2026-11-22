@@ -45,7 +45,7 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
 endif()
 configure_file(src/build_info.hpp.in generated/spe/build_info.hpp @ONLY)
 
-add_library(spe_core src/config.cpp src/config_json.cpp src/workload.cpp src/schedule.cpp src/engine.cpp src/result.cpp src/tls.cpp src/headers.cpp)
+add_library(spe_core src/config.cpp src/config_json.cpp src/workload.cpp src/schedule.cpp src/engine.cpp src/verification.cpp src/result.cpp src/tls.cpp src/headers.cpp)
 target_include_directories(spe_core PUBLIC include PRIVATE "${PROJECT_BINARY_DIR}/generated")
 target_include_directories(spe_core SYSTEM PRIVATE third_party/nlohmann/include)
 target_link_libraries(spe_core PUBLIC CURL::libcurl spe_options)
@@ -85,6 +85,9 @@ if(BUILD_TESTING)
     add_test(NAME methods COMMAND "${Python3_EXECUTABLE}"
         "${PROJECT_SOURCE_DIR}/tests/run_suite.py" --suite methods --engine "$<TARGET_FILE:spe>"
         --openssl "${SPE_OPENSSL_PROGRAM}" --artifacts "${PROJECT_BINARY_DIR}/test-results/managed")
+    add_test(NAME response_verification COMMAND "${Python3_EXECUTABLE}"
+        "${PROJECT_SOURCE_DIR}/tests/verification.py" --engine "$<TARGET_FILE:spe>" --openssl "${SPE_OPENSSL_PROGRAM}")
+    set_tests_properties(response_verification PROPERTIES TIMEOUT 120 LABELS "tls;network;integration")
     add_test(NAME retention_unit COMMAND "${Python3_EXECUTABLE}"
         "${PROJECT_SOURCE_DIR}/tests/test_run_suite.py")
     add_test(NAME restoration_unit COMMAND "${Python3_EXECUTABLE}"

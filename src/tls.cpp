@@ -37,18 +37,24 @@ CaBundle load_ca_bundle(const std::string& path) {
         if (result.bytes.size() > limit) throw std::invalid_argument("CA certificate file exceeds 1 MiB");
     }
     if (result.bytes.empty()) throw std::invalid_argument("CA certificate file is empty");
+    result.sha256 = sha256_hex(result.bytes);
+    return result;
+}
+
+std::string sha256_hex(std::string_view bytes) {
     std::array<unsigned char, 32> digest{};
 #ifdef __APPLE__
-    if (CC_SHA256(result.bytes.data(), static_cast<CC_LONG>(result.bytes.size()), digest.data()) == nullptr)
+    if (CC_SHA256(bytes.data(), static_cast<CC_LONG>(bytes.size()), digest.data()) == nullptr)
         throw std::runtime_error("cannot fingerprint CA certificate bundle");
 #else
     unsigned length = 0;
-    if (EVP_Digest(result.bytes.data(), result.bytes.size(), digest.data(), &length, EVP_sha256(), nullptr) != 1 || length != digest.size())
+    if (EVP_Digest(bytes.data(), bytes.size(), digest.data(), &length, EVP_sha256(), nullptr) != 1 || length != digest.size())
         throw std::runtime_error("cannot fingerprint CA certificate bundle");
 #endif
     constexpr char hex[] = "0123456789abcdef";
-    for (auto byte : digest) { result.sha256 += hex[byte >> 4]; result.sha256 += hex[byte & 15]; }
-    return result;
+    std::string encoded;
+    for (auto byte : digest) { encoded += hex[byte >> 4]; encoded += hex[byte & 15]; }
+    return encoded;
 }
 
 bool is_tls_error(int code) {

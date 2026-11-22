@@ -59,7 +59,17 @@ struct EndpointResult {
     LatencySummary completed_latency_ms;
 };
 
+// Only this deliberately public identifier and aggregate probe outcomes are exported.
+bool valid_public_id(std::string_view id);
+struct Verification {
+    std::string policy_id;
+    std::size_t attempted = 0;
+    std::size_t passed = 0;
+    std::string failure;
+};
+
 struct RunResult {
+    std::optional<Verification> verification;
     Config config;
     Counters counters;
     SchedulingStats scheduling;
@@ -90,7 +100,7 @@ public:
     void record(Outcome outcome, double duration_ms, long http_status = 0, int transport_error = 0, std::size_t endpoint = 0);
     const Counters& counters() const { return result_.counters; }
     RunResult finish(double elapsed_seconds, std::size_t peak_in_flight,
-                     bool interrupted, std::string engine_error = {});
+                     bool interrupted, std::string engine_error = {}, std::optional<Verification> verification = {});
 
 private:
     std::uint64_t remaining_arrivals() const;

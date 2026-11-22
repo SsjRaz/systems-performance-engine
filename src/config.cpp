@@ -70,6 +70,12 @@ void validate_config(const Config& config) {
         throw std::invalid_argument("repeated closed-loop writes require an explicit request budget");
     if (!config.body_file.empty() && !method_accepts_body(config.method))
         throw std::invalid_argument("--body-file requires POST, PUT or PATCH");
+    if (config.verification_file.size() > 4096 || config.verification_file.find('\0') != std::string::npos)
+        throw std::invalid_argument("invalid verification file path");
+    if (config.replay_safe_post && (config.verification_file.empty() || config.method != "POST"))
+        throw std::invalid_argument("--replay-safe-post requires POST and --verify-response");
+    if (!config.verification_file.empty() && !method_reuses_connections(config.method) && !config.replay_safe_post)
+        throw std::invalid_argument("response probes permit GET, HEAD or explicitly replay-safe POST");
     if (config.body_file.size() > 4096 || config.body_file.find('\0') != std::string::npos)
         throw std::invalid_argument("invalid request body file path");
     if (budget == 0 || budget > max_requests) {
@@ -134,10 +140,13 @@ CliOptions parse_cli(std::span<const std::string_view> arguments) {
             options.help = true;
         } else if (arg == "--version") {
             options.version = true;
+        } else if (arg == "--replay-safe-post") {
+            if (options.config.replay_safe_post) throw std::invalid_argument("duplicate --replay-safe-post");
+            options.config.replay_safe_post = true;
         } else if (arg.starts_with('-')) {
             if (arg != "--requests" && arg != "--rate" && arg != "--duration-ms" && arg != "--concurrency" && arg != "--timeout-ms" &&
                 arg != "--max-body-bytes" && arg != "--json" && arg != "--ca-file" && arg != "--headers-file" &&
-                arg != "--workload-file" && arg != "--method" && arg != "--body-file") {
+                arg != "--verify-response" && arg != "--workload-file" && arg != "--method" && arg != "--body-file") {
                 throw std::invalid_argument("unknown option: " + std::string(arg));
             }
             if (!seen.insert(arg).second) {
@@ -149,6 +158,11 @@ CliOptions parse_cli(std::span<const std::string_view> arguments) {
             const auto value = arguments[i];
             if (arg == "--method") {
                 options.config.method = value;
+                continue;
+            }
+            if (arg == "--verify-response") {
+                if (value.empty() || value.starts_with('-')) throw std::invalid_argument("--verify-response requires a file path");
+                options.config.verification_file = value;
                 continue;
             }
             if (arg == "--body-file") {
@@ -216,6 +230,8 @@ CliOptions parse_cli(std::span<const std::string_view> arguments) {
 std::string_view usage() {
     return "Usage: spe <http[s]://host[:port]/path> [options]\n"
            "  --method VERB       GET (default), HEAD, POST, PUT, PATCH or DELETE\n"
+           "  --verify-response PATH  Private JSON assertions for an untimed probe per endpoint\n"
+           "  --replay-safe-post      Acknowledge that the extra POST probe is safe to repeat\n"
            "  --body-file PATH    Private binary payload for POST/PUT/PATCH, up to 64 KiB\n"
            "  --requests N        Total logical requests, 1..1000000 (default 1000 for GET/HEAD, 1 for writes)\n"
            "  --rate N            Fixed arrivals/second (positive integer); requires --duration-ms instead of --requests\n"

@@ -210,7 +210,8 @@ void Measurements::record(Outcome outcome, double duration_ms, long http_status,
 }
 
 RunResult Measurements::finish(double elapsed_seconds, std::size_t peak_in_flight,
-                               bool interrupted, std::string engine_error) {
+                               bool interrupted, std::string engine_error, std::optional<Verification> verification) {
+    result_.verification = std::move(verification);
     auto& c = result_.counters;
     c.not_started = c.requested - c.started;
     if (!c.valid()) throw std::logic_error("request accounting invariant violated");
@@ -218,7 +219,8 @@ RunResult Measurements::finish(double elapsed_seconds, std::size_t peak_in_fligh
     if (const auto rate = result_.config.fixed_rate) {
         auto& s = result_.scheduling;
         s.offered = c.started + s.missed_late + s.missed_capacity;
-        if (s.offered > c.requested || (!interrupted && engine_error.empty() && s.offered != c.requested))
+        const bool probe_failed = result_.verification && !result_.verification->failure.empty();
+        if (s.offered > c.requested || (!interrupted && engine_error.empty() && !probe_failed && s.offered != c.requested))
             throw std::logic_error("arrival accounting invariant violated");
         s.window_seconds = std::min(elapsed_seconds, static_cast<double>(rate->duration_ms) / 1000);
         if (s.window_seconds > 0) {
@@ -254,7 +256,7 @@ std::string_view version() { return build_info::version; }
 void write_json(std::ostream& out, const RunResult& r) {
     out.imbue(std::locale::classic());
     out << std::defaultfloat << std::setprecision(17);
-    out << "{\n  \"schema_version\":6,\n  \"engine\":{\"version\":";
+    out << "{\n  \"schema_version\":" << (r.verification ? 7 : 6) << ",\n  \"engine\":{\"version\":";
     quoted(out, version());
     out << ",\"source_revision\":"; quoted(out, build_info::revision);
     out << ",\"compiler\":"; quoted(out, build_info::compiler);
@@ -264,6 +266,15 @@ void write_json(std::ostream& out, const RunResult& r) {
     out << ",\"platform\":"; quoted(out, build_info::platform);
     out << ",\"libcurl\":"; quoted(out, curl_version());
     out << "},\n  \"started_at_utc\":"; quoted(out, r.started_at_utc);
+    if (r.verification) {
+        const auto& v = *r.verification;
+        out << ",\n  \"verification\":{\"scope\":\"untimed_preflight\",\"policy_id\":";
+        quoted(out, v.policy_id);
+        out << ",\"status\":"; quoted(out, v.failure.empty() ? "passed" : "failed");
+        out << ",\"attempted\":" << v.attempted << ",\"passed\":" << v.passed << ",\"failure\":";
+        if (v.failure.empty()) out << "null"; else quoted(out, v.failure);
+        out << '}';
+    }
     out << ",\n  \"workload\":{\"url\":"; quoted(out, r.config.url);
     out << ",\"method\":"; quoted(out, r.config.method);
     out << ",\"request_body_bytes\":" << r.request_body_bytes << ",\"http_version\":\"1.1\",\"model\":";
@@ -369,6 +380,11 @@ void write_json(std::ostream& out, const RunResult& r) {
 
 void write_summary(std::ostream& out, const RunResult& r) {
     const auto& c = r.counters;
+    if (r.verification) {
+        const auto& v = *r.verification;
+        out << "Untimed response verification " << (v.failure.empty() ? "passed" : v.failure)
+            << " (" << v.passed << '/' << v.attempted << " probes passed)\n";
+    } else out << "Response correctness unchecked\n";
     out << std::fixed << std::setprecision(3)
         << "Completed " << c.completed << '/' << c.requested << " requests; " << c.successes << " successful\n"
         << "Elapsed: " << r.elapsed_seconds << " s; completed: " << r.completed_throughput_rps
