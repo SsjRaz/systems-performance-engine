@@ -11,6 +11,7 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace spe {
@@ -239,12 +240,17 @@ RunResult run(const Config& config, const std::function<bool()>& stop_requested)
 
                 int wait_ms = 50;
                 if (elapsed < schedule->window()) {
-                    const auto wait = std::chrono::ceil<std::chrono::milliseconds>(schedule->next_wake() - elapsed);
-                    wait_ms = static_cast<int>(std::min(wait, std::chrono::milliseconds(50)).count());
+                    const auto wake = std::min(schedule->next_wake(), elapsed + std::chrono::milliseconds(50));
+                    if (in_flight == 0) {
+                        // No transfer needs socket progress. Preserve sub-millisecond
+                        // arrival deadlines and the normal cancellation check interval.
+                        std::this_thread::sleep_until(begin + wake);
+                        continue;
+                    }
+                    wait_ms = static_cast<int>(std::chrono::ceil<std::chrono::milliseconds>(wake - elapsed).count());
                 } else if (in_flight == 0) {
                     break; // All arrivals accounted for; all dispatched transfers drained.
                 }
-                // curl_multi_poll also sleeps when the idle service has no descriptors.
                 check(curl_multi_poll(multi.get(), nullptr, 0, wait_ms, nullptr));
             }
         } else {

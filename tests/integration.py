@@ -157,14 +157,17 @@ class HttpIntegration(unittest.TestCase):
 
     def test_fixed_rate_overload_and_comparison(self):
         with TimingService() as svc:
-            fast = self.fixed_run("paced-fast", svc, 20, 1000, concurrency=1)
-            self.assertEqual(fast["counts"]["successes"], 20)
+            # Give the fast control a 250 ms dispatch period on shared runners.
+            # Hold the slow response past the last arrival to occupy the only slot.
+            fast = self.fixed_run("paced-fast", svc, 4, 1000, concurrency=1, timeout=3000)
+            self.assertEqual(fast["counts"]["successes"], 4)
+            self.assertEqual(len(svc.server.receipts), 4)
             svc.server.receipts.clear()
-            svc.server.processing_delay = 0.18
-            slow = self.fixed_run("paced-slow", svc, 20, 1000, concurrency=1, expected=3)
+            svc.server.processing_delay = 1.25
+            slow = self.fixed_run("paced-slow", svc, 4, 1000, concurrency=1, timeout=3000, expected=3)
             self.assertGreater(slow["scheduling"]["missed_capacity"], 0)
-            self.assertEqual(slow["counts"]["successes"], len(svc.server.receipts))
-            self.assertLessEqual(len(svc.server.receipts), 6)
+            self.assertEqual(slow["counts"]["successes"], 1)
+            self.assertEqual(len(svc.server.receipts), 1)
             self.assertEqual(slow["peak_in_flight"], 1)
             process = subprocess.run([str(self.engine), "compare", self.artifacts/"paced-fast.json",
                 self.artifacts/"paced-slow.json", "--json", "-"], text=True, capture_output=True, timeout=10)
