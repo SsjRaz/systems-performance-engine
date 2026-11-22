@@ -10,8 +10,10 @@ import json
 import os
 from pathlib import Path
 import runpy
+import struct
 import subprocess
 import sys
+import tarfile
 import unittest
 from unittest import mock
 
@@ -21,6 +23,9 @@ FIXTURE = Path(__file__).resolve().parents[1] / "benchmarks" / "cpu-profile"
 sys.path.insert(0, str(FIXTURE))
 fixture = importlib.import_module("fixture")
 profile_tools = importlib.import_module("profile_tools")
+sys.path.insert(0, str(FIXTURE.parent / "oss"))
+meili_samples = importlib.import_module("meili_samples")
+meili_replay = importlib.import_module("meili_replay")
 
 
 class ProfileComparison(unittest.TestCase):
@@ -143,6 +148,63 @@ class ProfileComparison(unittest.TestCase):
         self.assertEqual(wait["reason"], "no_consistent_material_user_cpu_increase")
         self.assertEqual(wait["suspects"], [])
 
+    def test_multicore_process_receipts_and_symbol_only_frames(self):
+        plan, caps = self.inputs()
+        plan.update(schema_version=2, clock_tick_us=10, cpu_capacity=2)
+        for path, cap in caps:
+            cap["schema_version"] = 2
+            cap["frames"][1] = ["app::lookup", "", 0]
+            r = cap["resource"]
+            r.pop("voluntary_switches")
+            r.pop("involuntary_switches")
+            native = json.loads((self.root / cap["native_result"]).read_text())
+            wall_us = max(2000, round(native["elapsed_seconds"] * 1_000_000) + 2)
+            r.update(receipts=2, clock_tick_us=10, cpu_capacity=2, wall_us=wall_us)
+            path.write_text(json.dumps(cap))
+        report = self.compare(plan)
+        (row,) = report["suspects"]
+        self.assertIsNone(row["source"])
+        self.assertIsNone(row["line"])
+        self.assertEqual(row["delta_self_us_per_success"], 950)
+        self.assertEqual(
+            report["resources"]["candidate"]["successful_requests_including_preflight"],
+            4,
+        )
+        path, cap = caps[1]
+        for key, value in [
+            ("wall_us", 1000),
+            ("receipts", 1),
+            ("receipts", 3),
+            ("cpu_capacity", 3),
+            ("clock_tick_us", 1),
+            ("user_us", 3001),
+        ]:
+            with self.subTest(key=key, value=value):
+                path.write_text(
+                    json.dumps(
+                        dict(cap, resource=dict(cap["resource"], **{key: value}))
+                    )
+                )
+                self.assertEqual(self.compare(plan, 2)["suspects"], [])
+        short = dict(cap["resource"], user_us=0, system_us=0, wall_us=1)
+        path.write_text(json.dumps(dict(cap, resource=short)))
+        self.assertEqual(
+            self.compare(plan, 2)["reason"],
+            "process window excludes native timed requests",
+        )
+        path.write_text(json.dumps(dict(cap, schema_version=1)))
+        self.assertEqual(self.compare(plan, 2)["suspects"], [])
+        for path, cap in caps:
+            r = dict(
+                cap["resource"],
+                wall_us=100_000_000,
+                user_us=160_000_000
+                if cap["instance"].endswith("candidate")
+                else 75_000_000,
+            )
+            path.write_text(json.dumps(dict(cap, resource=r)))
+        self.assertEqual(self.compare(plan)["reason"], "ranked_cpu_suspects")
+
     def test_timing_gate_and_cross_phase_identity(self):
         plan, caps = self.inputs()
         timing = self.root / "timing.json"
@@ -199,6 +261,67 @@ class ProfileComparison(unittest.TestCase):
         self.assertEqual(
             self.compare(plan, 2)["reason"], "incompatible_or_incomplete_native_runs"
         )
+
+    def test_saved_meilisearch_study_replays_without_a_profiler(self):
+        archive = (
+            FIXTURE.parent / "oss" / "evidence" / "meili-profile-linux-x86_64.tar.gz"
+        )
+        with tarfile.open(archive, "r:gz") as tar:
+            for member in tar:
+                parts = Path(member.name).parts
+                if not member.name.endswith(".json"):
+                    continue
+                self.assertTrue(
+                    member.isfile() and parts[0] == "meili-study" and ".." not in parts
+                )
+                path = self.root.joinpath(*parts)
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(tar.extractfile(member).read())
+        root = self.root / "meili-study"
+        result = meili_replay.audit(root, self.engine, {})
+        archived = json.loads((root / "audit.json").read_text())
+        for key in (
+            "studies",
+            "process_windows",
+            "timed_successes",
+            "native_preflights",
+            "profile_samples",
+            "reports_replayed",
+        ):
+            self.assertEqual(result[key], archived[key])
+        self.assertEqual(result["profiles_resymbolized"], 0)
+
+    def test_native_gperftools_mapping_and_sample_conservation(self):
+        raw = self.root / "test.prof"
+        binary = self.root / "app"
+        mappings = f"e000-e100 r-xp 00002000 00:00 9223372036854775807{binary}\n"
+        records = [0, 3, 0, 4000, 0, 3, 2, 0xE012, 0xE024, 1, 1, 0xFE00, 0, 1, 0]
+        raw.write_bytes(struct.pack(f"<{len(records)}Q", *records) + mappings.encode())
+        rows, maps = meili_samples.raw_profile(raw, 4)
+        self.assertEqual(rows, [(3, (0xE012, 0xE023)), (1, (0xFE00,))])
+        app = ("app::serve", "", 0)
+        caller = ("app::run", "crates/app/src/lib.rs", 4)
+        with mock.patch.object(
+            meili_samples, "segments", return_value=[(0x2010, 0x2050, 0x3050)]
+        ):
+            self.assertEqual(
+                meili_samples.addresses(binary, maps, [0xE012, 0xE023, 0xE060]),
+                {0xE012: 0x3052, 0xE023: 0x3063},
+            )
+            with mock.patch.object(
+                meili_samples, "symbolize", return_value={0x3052: app, 0x3063: caller}
+            ):
+                portable = meili_samples.elf_stacks(rows, maps, binary)
+                frames, stacks = meili_samples.compact(portable, binary)
+        self.assertEqual(
+            [(w, [frames[i] for i in stack]) for w, stack in stacks],
+            [(1, [meili_samples.OTHER]), (3, [app, caller])],
+        )
+        with self.assertRaises(ValueError):
+            meili_samples.raw_profile(raw, 3)
+        raw.write_bytes(raw.read_bytes()[:49])
+        with self.assertRaises(ValueError):
+            meili_samples.raw_profile(raw, 4)
 
     def test_exporter_stack_direction(self):
         sample = """Total: 5 samples

@@ -1,0 +1,124 @@
+diff --git a/crates/filter-parser/src/lib.rs b/crates/filter-parser/src/lib.rs
+index 8807554..066f126 100644
+--- a/crates/filter-parser/src/lib.rs
++++ b/crates/filter-parser/src/lib.rs
+@@ -46,6 +46,7 @@ mod error;
+ mod value;
+ 
+ use std::fmt::Debug;
++use std::sync::Arc;
+ 
+ pub use condition::{parse_condition, parse_to, Condition};
+ use condition::{
+@@ -81,6 +82,7 @@ const MAX_FILTER_DEPTH: usize = 150;
+ pub enum CowSpan<'a> {
+     Borrowed(Span<'a>),
+     Owned(OwnedSpan),
++    SharedContext { fragment: String, context: Arc<str> },
+ }
+ 
+ impl<'a> CowSpan<'a> {
+@@ -88,6 +90,7 @@ impl<'a> CowSpan<'a> {
+         match self {
+             CowSpan::Borrowed(span) => span.fragment(),
+             CowSpan::Owned(span) => span.fragment(),
++            CowSpan::SharedContext { fragment, .. } => fragment,
+         }
+     }
+ 
+@@ -95,6 +98,7 @@ impl<'a> CowSpan<'a> {
+         match self {
+             CowSpan::Borrowed(span) => span.extra,
+             CowSpan::Owned(span) => &span.extra,
++            CowSpan::SharedContext { context, .. } => context,
+         }
+     }
+ 
+@@ -107,6 +111,9 @@ impl<'a> CowSpan<'a> {
+                 CowSpan::Owned(OwnedSpan::new_extra(fragment, extra))
+             }
+             CowSpan::Owned(span) => CowSpan::Owned(span),
++            CowSpan::SharedContext { fragment, context } => {
++                CowSpan::SharedContext { fragment, context }
++            }
+         }
+     }
+ 
+@@ -114,7 +121,7 @@ impl<'a> CowSpan<'a> {
+         match self {
+             CowSpan::Borrowed(span) => Some(span.get_utf8_column()),
+             // When owning a span, we don't know the original column because we lost the reference to the original input.
+-            CowSpan::Owned(_) => None,
++            CowSpan::Owned(_) | CowSpan::SharedContext { .. } => None,
+         }
+     }
+ }
+@@ -212,6 +219,17 @@ impl<'a> Token<'a> {
+         self.span.get_utf8_column()
+     }
+ 
++    fn into_owned_with_context(self, source: &str, shared: &Arc<str>) -> Token<'static> {
++        let span = match self.span {
++            CowSpan::Borrowed(span) if std::ptr::eq(span.extra, source) => CowSpan::SharedContext {
++                fragment: span.fragment().to_string(),
++                context: Arc::clone(shared),
++            },
++            other => other.into_owned(),
++        };
++        Token { span, modified_fragment: self.modified_fragment }
++    }
++
+     pub fn into_owned(self) -> Token<'static> {
+         Token { span: self.span.into_owned(), modified_fragment: self.modified_fragment }
+     }
+@@ -270,10 +288,15 @@ impl IndexFilterCondition<'_> {
+             Self::Condition { fid, op } => {
+                 IndexFilterCondition::Condition { fid: fid.into_owned(), op: op.into_owned() }
+             }
+-            Self::In { fid, els } => IndexFilterCondition::In {
+-                fid: fid.into_owned(),
+-                els: els.into_iter().map(|el| el.into_owned()).collect(),
+-            },
++            Self::In { fid, els } => {
++                let source = fid.extra();
++                let shared = Arc::<str>::from(source);
++                let els = els
++                    .into_iter()
++                    .map(|el| el.into_owned_with_context(source, &shared))
++                    .collect();
++                IndexFilterCondition::In { fid: fid.into_owned(), els }
++            }
+             Self::Or(subfilters) => IndexFilterCondition::Or(
+                 subfilters.into_iter().map(|filter| filter.into_owned()).collect(),
+             ),
+@@ -1115,6 +1138,30 @@ pub mod tests {
+         Fc::parse(s).unwrap().unwrap()
+     }
+ 
++    #[test]
++    fn owned_in_preserves_context_and_modified_tokens() {
++        let source = String::from("example filter");
++        let other = String::from("different input");
++        let field = Token::from(Span::new_extra("field", source.as_str()));
++        let value = Token::from(Span::new_extra("value", source.as_str()))
++            .with_modified_fragment(Some("modified".to_owned()));
++        let foreign = Token::from(Span::new_extra("other", other.as_str()));
++        let condition = IndexFilterCondition::In {
++            fid: field,
++            els: vec![value.clone(), value, foreign],
++        }
++        .into_owned();
++        drop(source);
++        drop(other);
++        let IndexFilterCondition::In { fid, els } = condition else { unreachable!() };
++        assert_eq!(fid.extra(), "example filter");
++        assert_eq!((els[0].original_fragment(), els[0].fragment()), ("value", "modified"));
++        assert_eq!(els[0].extra(), "example filter");
++        assert!(std::ptr::eq(els[0].extra(), els[1].extra()));
++        assert_eq!(els[2].extra(), "different input");
++        assert_eq!(els[0].clone().into_owned().get_utf8_column(), None);
++    }
++
+     #[test]
+     fn parse_escaped() {
+         insta::assert_snapshot!(p(r"title = 'foo\\'"), @r#"{title} = {foo\}"#);
