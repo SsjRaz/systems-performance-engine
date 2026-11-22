@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path
 import runpy
+import struct
 import subprocess
 import sys
 import unittest
@@ -21,6 +22,8 @@ FIXTURE = Path(__file__).resolve().parents[1] / "benchmarks" / "cpu-profile"
 sys.path.insert(0, str(FIXTURE))
 fixture = importlib.import_module("fixture")
 profile_tools = importlib.import_module("profile_tools")
+sys.path.insert(0, str(FIXTURE.parent / "oss"))
+meili_samples = importlib.import_module("meili_samples")
 
 
 class ProfileComparison(unittest.TestCase):
@@ -143,6 +146,45 @@ class ProfileComparison(unittest.TestCase):
         self.assertEqual(wait["reason"], "no_consistent_material_user_cpu_increase")
         self.assertEqual(wait["suspects"], [])
 
+    def test_multicore_process_receipts_and_symbol_only_frames(self):
+        plan, caps = self.inputs()
+        plan.update(schema_version=2, clock_tick_us=10, cpu_capacity=2)
+        for path, cap in caps:
+            cap["schema_version"] = 2
+            cap["frames"][1] = ["app::lookup", "", 0]
+            r = cap["resource"]
+            r.pop("voluntary_switches")
+            r.pop("involuntary_switches")
+            r.update(receipts=2, clock_tick_us=10, cpu_capacity=2, wall_us=2000)
+            path.write_text(json.dumps(cap))
+        report = self.compare(plan)
+        (row,) = report["suspects"]
+        self.assertIsNone(row["source"])
+        self.assertIsNone(row["line"])
+        self.assertEqual(row["delta_self_us_per_success"], 950)
+        self.assertEqual(
+            report["resources"]["candidate"]["successful_requests_including_preflight"],
+            4,
+        )
+        path, cap = caps[1]
+        for key, value in [
+            ("wall_us", 1000),
+            ("receipts", 1),
+            ("receipts", 3),
+            ("cpu_capacity", 3),
+            ("clock_tick_us", 1),
+            ("user_us", 3001),
+        ]:
+            with self.subTest(key=key, value=value):
+                path.write_text(
+                    json.dumps(
+                        dict(cap, resource=dict(cap["resource"], **{key: value}))
+                    )
+                )
+                self.assertEqual(self.compare(plan, 2)["suspects"], [])
+        path.write_text(json.dumps(dict(cap, schema_version=1)))
+        self.assertEqual(self.compare(plan, 2)["suspects"], [])
+
     def test_timing_gate_and_cross_phase_identity(self):
         plan, caps = self.inputs()
         timing = self.root / "timing.json"
@@ -199,6 +241,37 @@ class ProfileComparison(unittest.TestCase):
         self.assertEqual(
             self.compare(plan, 2)["reason"], "incompatible_or_incomplete_native_runs"
         )
+
+    def test_native_gperftools_mapping_and_sample_conservation(self):
+        raw = self.root / "test.prof"
+        binary = self.root / "app"
+        mappings = f"e000-e100 r-xp 00002000 00:00 9223372036854775807{binary}\n"
+        records = [0, 3, 0, 4000, 0, 3, 2, 0xE012, 0xE024, 1, 1, 0xFE00, 0, 1, 0]
+        raw.write_bytes(struct.pack(f"<{len(records)}Q", *records) + mappings.encode())
+        rows, maps = meili_samples.raw_profile(raw, 4)
+        self.assertEqual(rows, [(3, (0xE012, 0xE023)), (1, (0xFE00,))])
+        app = ("app::serve", "", 0)
+        caller = ("app::run", "crates/app/src/lib.rs", 4)
+        with mock.patch.object(
+            meili_samples, "segments", return_value=[(0x2010, 0x2050, 0x3050)]
+        ):
+            self.assertEqual(
+                meili_samples.addresses(binary, maps, [0xE012, 0xE023, 0xE060]),
+                {0xE012: 0x3052, 0xE023: 0x3063},
+            )
+            with mock.patch.object(
+                meili_samples, "symbolize", return_value={0x3052: app, 0x3063: caller}
+            ):
+                frames, stacks = meili_samples.compact(rows, maps, binary)
+        self.assertEqual(
+            [(w, [frames[i] for i in stack]) for w, stack in stacks],
+            [(1, [meili_samples.OTHER]), (3, [app, caller])],
+        )
+        with self.assertRaises(ValueError):
+            meili_samples.raw_profile(raw, 3)
+        raw.write_bytes(raw.read_bytes()[:49])
+        with self.assertRaises(ValueError):
+            meili_samples.raw_profile(raw, 4)
 
     def test_exporter_stack_direction(self):
         sample = """Total: 5 samples

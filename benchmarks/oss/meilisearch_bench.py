@@ -59,6 +59,10 @@ def serve(tools, state, label, port, log):
     binary = tools / f"meili-{version}"
     if digest(binary) != sha:
         raise RuntimeError(f"Wrong Meilisearch binary for {version}")
+    return serve_binary(binary, state, version, port, log)
+
+
+def serve_binary(binary, state, version, port, log, environment=None):
     db = state / f"db-{version}"
     return launch(
         [
@@ -78,7 +82,7 @@ def serve(tools, state, label, port, log):
             "INFO",
         ],
         state,
-        dict(os.environ, RAYON_NUM_THREADS="2"),
+        dict(os.environ, RAYON_NUM_THREADS="2", **(environment or {})),
         port,
         "/health",
         log,

@@ -57,7 +57,7 @@ fs::path relative_to(const fs::path& directory, const Json& value) {
 
 Json read(const fs::path& path) { return read_config_json(path.string(), ConfigFile::profile); }
 
-Frame frame(const Json& entry) {
+Frame frame(const Json& entry, bool allow_symbol_only) {
     require(entry.is_array() && entry.size() == 3, "invalid symbolized frame");
     auto name = entry.at(0).get<std::string>();
     auto file = entry.at(1).get<std::string>();
@@ -67,6 +67,7 @@ Frame frame(const Json& entry) {
     } else {
         require(!name.empty() && name.size() <= 512 && std::all_of(name.begin(), name.end(),
                 [](unsigned char c) { return c >= 32 && c < 127; }), "invalid public symbol");
+        if (allow_symbol_only && file.empty() && line == 0) return {{name, file}, line};
         require(line > 0 && !file.empty() && file.size() <= 256 &&
                 file.find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_./-") == file.npos,
                 "invalid source location");
@@ -83,10 +84,10 @@ struct Self {
 struct Window {
     std::string instance, native, native_sha, elf, build, policy;
     unsigned samples, successes, user, system, wall, peak_rss, voluntary, involuntary, preflights;
-    unsigned other = 0;
+    unsigned other = 0, receipts = 0;
     std::map<Symbol, Self> leaves;
 
-    double per_request(unsigned micros) const { return static_cast<double>(micros) / successes; }
+    double per_request(unsigned micros) const { return static_cast<double>(micros) / (receipts ? receipts : successes); }
     double estimated_us(const Symbol& key) const {
         const auto it = leaves.find(key);
         return it == leaves.end() ? 0 : per_request(user) * it->second.samples / samples;
@@ -98,7 +99,8 @@ Window window(const fs::path& path, const Json& plan, const Json& timing, std::s
     const auto data = read(path);
     fields(data, {"schema_version","instance","binary_sha256","build_id","runtime_id","dataset_sha256","policy_id",
                   "native_result","native_sha256","collector","frequency_hz","samples","frames","stacks","resource"});
-    number(data.at("schema_version"), 1, 1);
+    require(data.at("schema_version") == plan.at("schema_version"), "capture schema differs from plan");
+    const bool process_window = number(data.at("schema_version"), 1, 2) == 2;
     require(data.at("dataset_sha256") == plan.at("dataset_sha256") && data.at("collector") == plan.at("collector") &&
             data.at("frequency_hz") == plan.at("frequency_hz"), "capture dataset or collector differs");
     Window w{};
@@ -111,23 +113,38 @@ Window window(const fs::path& path, const Json& plan, const Json& timing, std::s
     w.native_sha = digest(data.at("native_sha256"), 64);
     w.native = relative_to(path.parent_path(), data.at("native_result")).string();
     const auto& r = data.at("resource");
-    fields(r, {"collector","preflights","successes","user_us","system_us","wall_us","peak_rss_kib",
-               "voluntary_switches","involuntary_switches"});
+    if (process_window) {
+        fields(r, {"collector","preflights","successes","receipts","user_us","system_us","wall_us","peak_rss_kib",
+                   "cpu_capacity","clock_tick_us"});
+    } else {
+        fields(r, {"collector","preflights","successes","user_us","system_us","wall_us","peak_rss_kib",
+                   "voluntary_switches","involuntary_switches"});
+    }
     require(r.at("collector") == plan.at("collector"), "resource collector differs");
     w.preflights = number(r.at("preflights"), 1, 1024);
     w.successes = number(r.at("successes"), 1, 1000000);
     w.user = number(r.at("user_us"), 0, 120000000);
     w.system = number(r.at("system_us"), 0, 120000000);
     w.wall = number(r.at("wall_us"), 1, 120000000);
-    require(w.user + w.system <= w.wall + 5000, "single-thread process CPU exceeds wall time");
     w.peak_rss = number(r.at("peak_rss_kib"), 1, 1000000000);
-    w.voluntary = number(r.at("voluntary_switches"), 0, 1000000000);
-    w.involuntary = number(r.at("involuntary_switches"), 0, 1000000000);
+    if (process_window) {
+        const auto capacity = number(r.at("cpu_capacity"), 1, 1024);
+        const auto tick = number(r.at("clock_tick_us"), 1, 100000);
+        require(plan.at("cpu_capacity") == capacity && plan.at("clock_tick_us") == tick, "process capacity or clock changed");
+        w.receipts = number(r.at("receipts"), 2, 1000001);
+        require(w.preflights == 1 && w.receipts == w.successes + w.preflights, "verified search receipts disagree");
+        require(w.user % tick == 0 && w.system % tick == 0, "invalid process tick accounting");
+        require(w.user + w.system <= std::uint64_t{w.wall} * capacity + 2 * tick, "process CPU exceeds assigned capacity");
+    } else {
+        require(w.user + w.system <= w.wall + 5000, "single-thread process CPU exceeds wall time");
+        w.voluntary = number(r.at("voluntary_switches"), 0, 1000000000);
+        w.involuntary = number(r.at("involuntary_switches"), 0, 1000000000);
+    }
     w.samples = number(data.at("samples"), 0, 100000);
     std::vector<Frame> frames;
     const auto& table = data.at("frames");
     require(table.is_array() && table.size() <= 512, "invalid frame table");
-    for (const auto& entry : table) frames.push_back(frame(entry));
+    for (const auto& entry : table) frames.push_back(frame(entry, process_window));
     const auto& stacks = data.at("stacks");
     require(stacks.is_array() && stacks.size() <= 1024, "invalid stack table");
     unsigned total = 0;
@@ -200,6 +217,8 @@ Study collect(const Json& plan, const fs::path& directory, const Json& timing, c
 
 void check_native(const Study& study, const Json& comparison, const Json& timing, const Json& decision) {
     require(comparison.at("input_result_schema_version") == 7, "verified native results required");
+    const bool process_window = study.pairs.front()[0].receipts != 0;
+    if (process_window) require(comparison.at("workload").at("endpoint_mix").is_null(), "process window requires one endpoint");
     std::int64_t previous = 0;
     double elapsed = 0;
     auto primary = timing.at("blocks").size();
@@ -211,6 +230,7 @@ void check_native(const Study& study, const Json& comparison, const Json& timing
         elapsed = input.at("elapsed_seconds").get<double>();
         const auto& verify = input.at("verification");
         require(verify.at("status") == "passed", "native preflight failed");
+        if (process_window) require(verify.at("passed") == 1, "process window requires one verified preflight");
         if (index < primary) {
             // Tie the combined native snapshot back to the exact observations used for the timing verdict.
             auto metric = timing.at("metric");
@@ -228,7 +248,7 @@ void check_native(const Study& study, const Json& comparison, const Json& timing
 
 Json resources(const std::vector<Pair>& pairs, std::size_t arm) {
     double user = 0, system = 0, wall = 0;
-    unsigned samples = 0, other = 0, successes = 0, peak_rss = 0;
+    unsigned samples = 0, other = 0, successes = 0, peak_rss = 0, receipts = 0;
     std::uint64_t voluntary = 0, involuntary = 0;
     for (const auto& pair : pairs) {
         const auto& w = pair[arm];
@@ -236,13 +256,20 @@ Json resources(const std::vector<Pair>& pairs, std::size_t arm) {
         system += w.per_request(w.system);
         wall += w.per_request(w.wall);
         samples += w.samples; other += w.other; successes += w.successes;
+        receipts += w.receipts;
         peak_rss = std::max(peak_rss, w.peak_rss);
         voluntary += w.voluntary; involuntary += w.involuntary;
     }
     auto n = static_cast<double>(pairs.size());
-    return {{"user_us_per_success",user/n},{"system_us_per_success",system/n},{"wall_us_per_success",wall/n},
-            {"samples",samples},{"other_leaf_samples",other},{"successes",successes},{"max_peak_rss_kib",peak_rss},
-            {"voluntary_switches",voluntary},{"involuntary_switches",involuntary}};
+    Json summary = {{"user_us_per_success",user/n},{"system_us_per_success",system/n},{"wall_us_per_success",wall/n},
+                    {"samples",samples},{"other_leaf_samples",other},{"successes",successes},{"max_peak_rss_kib",peak_rss}};
+    if (receipts) {
+        summary["successful_requests_including_preflight"] = receipts;
+    } else {
+        summary["voluntary_switches"] = voluntary;
+        summary["involuntary_switches"] = involuntary;
+    }
+    return summary;
 }
 
 std::string rank(Json& report, const std::vector<Pair>& pairs, unsigned floor_us, unsigned floor_percent) {
@@ -282,7 +309,8 @@ std::string rank(Json& report, const std::vector<Pair>& pairs, unsigned floor_us
             }
         }
         if (*std::min_element(delta.begin(),delta.end()) <= 0 || sample_support < 10) continue;
-        ranking.push_back({{"symbol",key.first},{"source",key.second},{"line",example.at(0).at(2)},
+        ranking.push_back({{"symbol",key.first},{"source",key.second.empty() ? Json(nullptr) : Json(key.second)},
+            {"line",key.second.empty() ? Json(nullptr) : example.at(0).at(2)},
             {"candidate_leaf_samples",sample_support},{"baseline_self_us_per_success",base/n},
             {"candidate_self_us_per_success",cand/n},{"delta_self_us_per_success",(cand-base)/n},
             {"paired_deltas_us_per_success",delta},{"example_leaf_first_stack",example}});
@@ -308,9 +336,18 @@ ComparisonReport compare_cpu_profiles(const AnalyzeOptions& options) {
     ComparisonStatus status = ComparisonStatus::insufficient_evidence;
     try {
         const auto plan = read(options.manifest);
-        fields(plan, {"schema_version","timing_manifest","dataset_sha256","collector","frequency_hz","cpu_floor_us",
-                      "cpu_floor_percent","pairs"});
-        number(plan.at("schema_version"), 1, 1);
+        const auto schema = number(plan.at("schema_version"), 1, 2);
+        if (schema == 2) {
+            fields(plan, {"schema_version","timing_manifest","dataset_sha256","collector","frequency_hz","cpu_floor_us",
+                          "cpu_floor_percent","pairs","cpu_capacity","clock_tick_us"});
+            report["schema_version"] = schema;
+            report["resource_denominator"] = "application-confirmed successful requests including one identical preflight";
+            report["cpu_capacity"] = number(plan.at("cpu_capacity"), 1, 1024);
+            report["clock_tick_us"] = number(plan.at("clock_tick_us"), 1, 100000);
+        } else {
+            fields(plan, {"schema_version","timing_manifest","dataset_sha256","collector","frequency_hz","cpu_floor_us",
+                          "cpu_floor_percent","pairs"});
+        }
         digest(plan.at("dataset_sha256"), 64);
         require(plan.at("collector") == "perf" || plan.at("collector") == "gperftools", "unsupported CPU collector");
         number(plan.at("frequency_hz"), 1, 4000);
@@ -353,9 +390,12 @@ ComparisonReport compare_cpu_profiles(const AnalyzeOptions& options) {
         report["reason"] = e.what();
     }
     std::string summary = "Differential CPU profile " + report.at("reason").get<std::string>() + "\n";
-    for (const auto& row : report.at("suspects"))
-        summary += row.at("symbol").get<std::string>() + " (" + row.at("source").get<std::string>() + ":" +
-                   row.at("line").dump() + ") +" + row.at("delta_self_us_per_success").dump() + " estimated user CPU us/success\n";
+    for (const auto& row : report.at("suspects")) {
+        const auto& source = row.at("source");
+        const auto location = source.is_null() ? "ELF symbol only" : source.get<std::string>() + ":" + row.at("line").dump();
+        summary += row.at("symbol").get<std::string>() + " (" + location + ") +" +
+                   row.at("delta_self_us_per_success").dump() + " estimated user CPU us/success\n";
+    }
     return {status, summary, report.dump(2) + "\n"};
 }
 }
