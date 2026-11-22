@@ -103,7 +103,10 @@ def task(port, path, method, data):
 
 
 def verify_hits(port, size):
-    data = request(port, "/multi-search", "POST", body(size), HEADERS)
+    return validate_hits(request(port, "/multi-search", "POST", body(size), HEADERS), size)
+
+
+def validate_hits(data, size):
     hits = data["hits"]
     seen = set()
     for item in hits:

@@ -13,6 +13,7 @@ import runpy
 import struct
 import subprocess
 import sys
+import tarfile
 import unittest
 from unittest import mock
 
@@ -24,6 +25,7 @@ fixture = importlib.import_module("fixture")
 profile_tools = importlib.import_module("profile_tools")
 sys.path.insert(0, str(FIXTURE.parent / "oss"))
 meili_samples = importlib.import_module("meili_samples")
+meili_replay = importlib.import_module("meili_replay")
 
 
 class ProfileComparison(unittest.TestCase):
@@ -155,7 +157,9 @@ class ProfileComparison(unittest.TestCase):
             r = cap["resource"]
             r.pop("voluntary_switches")
             r.pop("involuntary_switches")
-            r.update(receipts=2, clock_tick_us=10, cpu_capacity=2, wall_us=2000)
+            native = json.loads((self.root / cap["native_result"]).read_text())
+            wall_us = max(2000, round(native["elapsed_seconds"] * 1_000_000) + 2)
+            r.update(receipts=2, clock_tick_us=10, cpu_capacity=2, wall_us=wall_us)
             path.write_text(json.dumps(cap))
         report = self.compare(plan)
         (row,) = report["suspects"]
@@ -182,8 +186,24 @@ class ProfileComparison(unittest.TestCase):
                     )
                 )
                 self.assertEqual(self.compare(plan, 2)["suspects"], [])
+        short = dict(cap["resource"], user_us=0, system_us=0, wall_us=1)
+        path.write_text(json.dumps(dict(cap, resource=short)))
+        self.assertEqual(
+            self.compare(plan, 2)["reason"],
+            "process window excludes native timed requests",
+        )
         path.write_text(json.dumps(dict(cap, schema_version=1)))
         self.assertEqual(self.compare(plan, 2)["suspects"], [])
+        for path, cap in caps:
+            r = dict(
+                cap["resource"],
+                wall_us=100_000_000,
+                user_us=160_000_000
+                if cap["instance"].endswith("candidate")
+                else 75_000_000,
+            )
+            path.write_text(json.dumps(dict(cap, resource=r)))
+        self.assertEqual(self.compare(plan)["reason"], "ranked_cpu_suspects")
 
     def test_timing_gate_and_cross_phase_identity(self):
         plan, caps = self.inputs()
@@ -242,6 +262,35 @@ class ProfileComparison(unittest.TestCase):
             self.compare(plan, 2)["reason"], "incompatible_or_incomplete_native_runs"
         )
 
+    def test_saved_meilisearch_study_replays_without_a_profiler(self):
+        archive = (
+            FIXTURE.parent / "oss" / "evidence" / "meili-profile-linux-x86_64.tar.gz"
+        )
+        with tarfile.open(archive, "r:gz") as tar:
+            for member in tar:
+                parts = Path(member.name).parts
+                if not member.name.endswith(".json"):
+                    continue
+                self.assertTrue(
+                    member.isfile() and parts[0] == "meili-study" and ".." not in parts
+                )
+                path = self.root.joinpath(*parts)
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(tar.extractfile(member).read())
+        root = self.root / "meili-study"
+        result = meili_replay.audit(root, self.engine, {})
+        archived = json.loads((root / "audit.json").read_text())
+        for key in (
+            "studies",
+            "process_windows",
+            "timed_successes",
+            "native_preflights",
+            "profile_samples",
+            "reports_replayed",
+        ):
+            self.assertEqual(result[key], archived[key])
+        self.assertEqual(result["profiles_resymbolized"], 0)
+
     def test_native_gperftools_mapping_and_sample_conservation(self):
         raw = self.root / "test.prof"
         binary = self.root / "app"
@@ -262,7 +311,8 @@ class ProfileComparison(unittest.TestCase):
             with mock.patch.object(
                 meili_samples, "symbolize", return_value={0x3052: app, 0x3063: caller}
             ):
-                frames, stacks = meili_samples.compact(rows, maps, binary)
+                portable = meili_samples.elf_stacks(rows, maps, binary)
+                frames, stacks = meili_samples.compact(portable, binary)
         self.assertEqual(
             [(w, [frames[i] for i in stack]) for w, stack in stacks],
             [(1, [meili_samples.OTHER]), (3, [app, caller])],

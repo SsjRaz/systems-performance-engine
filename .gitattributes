@@ -1,3 +1,4 @@
 # Unified patches contain context markers before blank lines and tab indentation.
 # Source formatting is checked after application by the Petclinic Maven build.
 benchmarks/petclinic/*.patch -whitespace
+benchmarks/oss/*.patch whitespace=-blank-at-eol

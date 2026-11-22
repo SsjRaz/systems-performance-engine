@@ -156,13 +156,19 @@ def symbolize(binary, vmas):
     return result
 
 
-def compact(rows, maps, binary):
-    # Keep the interrupted PC and three actual callers. Weight always stays with its original leaf.
+def elf_stacks(rows, maps, binary):
+    # Preserve the interrupted PC and three actual callers as ELF-relative addresses.
     pcs = {pc for _, trace in rows for pc in trace[:4]}
     vmas = addresses(binary, maps, pcs)
-    symbols = symbolize(binary, vmas.values())
+    return [[weight, [vmas.get(pc) for pc in trace[:4]]] for weight, trace in rows]
+
+
+def compact(rows, binary):
+    symbols = symbolize(
+        binary, {pc for _, trace in rows for pc in trace if pc is not None}
+    )
     decoded = [
-        (weight, tuple(symbols.get(vmas.get(pc), OTHER) for pc in trace[:4]))
+        (weight, tuple(symbols.get(pc, OTHER) for pc in trace))
         for weight, trace in rows
     ]
     # Represent the most frequent exact frames under a fixed byte budget. All omitted frames

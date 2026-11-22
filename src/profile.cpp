@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdint>
 #include <filesystem>
 #include <map>
 #include <numeric>
@@ -33,6 +34,11 @@ void fields(const Json& value, std::initializer_list<const char*> names) {
 unsigned number(const Json& value, unsigned lo, unsigned hi) {
     require(value.is_number_unsigned() && value >= lo && value <= hi, "unsigned profile field outside bounds");
     return value.get<unsigned>();
+}
+
+std::uint64_t process_time(const Json& value, std::uint64_t limit) {
+    require(value.is_number_unsigned() && value <= limit, "process CPU exceeds assigned capacity");
+    return value.get<std::uint64_t>();
 }
 
 std::string id(const Json& value) {
@@ -67,7 +73,10 @@ Frame frame(const Json& entry, bool allow_symbol_only) {
     } else {
         require(!name.empty() && name.size() <= 512 && std::all_of(name.begin(), name.end(),
                 [](unsigned char c) { return c >= 32 && c < 127; }), "invalid public symbol");
-        if (allow_symbol_only && file.empty() && line == 0) return {{name, file}, line};
+        if (allow_symbol_only && file.empty() && line == 0) {
+            require(name != "??", "unresolved symbol must use [other]");
+            return {{name, file}, line};
+        }
         require(line > 0 && !file.empty() && file.size() <= 256 &&
                 file.find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_./-") == file.npos,
                 "invalid source location");
@@ -83,11 +92,12 @@ struct Self {
 };
 struct Window {
     std::string instance, native, native_sha, elf, build, policy;
-    unsigned samples, successes, user, system, wall, peak_rss, voluntary, involuntary, preflights;
+    unsigned samples, successes, wall, peak_rss, voluntary, involuntary, preflights;
+    std::uint64_t user, system;
     unsigned other = 0, receipts = 0;
     std::map<Symbol, Self> leaves;
 
-    double per_request(unsigned micros) const { return static_cast<double>(micros) / (receipts ? receipts : successes); }
+    double per_request(std::uint64_t micros) const { return static_cast<double>(micros) / (receipts ? receipts : successes); }
     double estimated_us(const Symbol& key) const {
         const auto it = leaves.find(key);
         return it == leaves.end() ? 0 : per_request(user) * it->second.samples / samples;
@@ -123,8 +133,6 @@ Window window(const fs::path& path, const Json& plan, const Json& timing, std::s
     require(r.at("collector") == plan.at("collector"), "resource collector differs");
     w.preflights = number(r.at("preflights"), 1, 1024);
     w.successes = number(r.at("successes"), 1, 1000000);
-    w.user = number(r.at("user_us"), 0, 120000000);
-    w.system = number(r.at("system_us"), 0, 120000000);
     w.wall = number(r.at("wall_us"), 1, 120000000);
     w.peak_rss = number(r.at("peak_rss_kib"), 1, 1000000000);
     if (process_window) {
@@ -133,9 +141,14 @@ Window window(const fs::path& path, const Json& plan, const Json& timing, std::s
         require(plan.at("cpu_capacity") == capacity && plan.at("clock_tick_us") == tick, "process capacity or clock changed");
         w.receipts = number(r.at("receipts"), 2, 1000001);
         require(w.preflights == 1 && w.receipts == w.successes + w.preflights, "verified search receipts disagree");
+        const auto limit = std::uint64_t{w.wall} * capacity + 2 * tick;
+        w.user = process_time(r.at("user_us"), limit);
+        w.system = process_time(r.at("system_us"), limit);
+        require(w.user + w.system <= limit, "process CPU exceeds assigned capacity");
         require(w.user % tick == 0 && w.system % tick == 0, "invalid process tick accounting");
-        require(w.user + w.system <= std::uint64_t{w.wall} * capacity + 2 * tick, "process CPU exceeds assigned capacity");
     } else {
+        w.user = number(r.at("user_us"), 0, 120000000);
+        w.system = number(r.at("system_us"), 0, 120000000);
         require(w.user + w.system <= w.wall + 5000, "single-thread process CPU exceeds wall time");
         w.voluntary = number(r.at("voluntary_switches"), 0, 1000000000);
         w.involuntary = number(r.at("involuntary_switches"), 0, 1000000000);
@@ -239,6 +252,7 @@ void check_native(const Study& study, const Json& comparison, const Json& timing
             require(value == decision.at("pairs").at(index).at(arms[arm]), "timing evidence changed during analysis");
         } else {
             const auto& w = study.pairs.at(index - primary)[arm];
+            if (process_window) require(elapsed <= (w.wall + 1) / 1e6, "process window excludes native timed requests");
             require(input.at("file_sha256").get<std::string>() == w.native_sha, "profile refers to different native result bytes");
             require(verify.at("policy_id").get<std::string>() == w.policy && verify.at("passed") == w.preflights &&
                     input.at("counts").at("successes") == w.successes, "target and native accounting differ");

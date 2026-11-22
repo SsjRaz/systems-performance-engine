@@ -17,6 +17,11 @@ import meilisearch_bench as meili
 REQUESTS = 384
 RUNTIME = "local-two-cpus-rayon2-warm-catalog"
 ARMS = ("baseline", "candidate")
+CHECKS = {
+    "policy_id": "federated-catalog-v1",
+    "endpoints": [{"fields": {"/estimatedTotalHits": 2000}}],
+}
+CATALOG_SHA256 = "a8e65c8d53605dbb47ccbae2e96f18ff31533684afa9501158239ee07dc22d68"
 
 
 def read(path):
@@ -50,6 +55,8 @@ def targets(args):
     if set(specs) != set(ARMS):
         raise ValueError("two target builds required")
     for arm in specs.values():
+        if set(arm) != {"path", "version", "sha256"}:
+            raise ValueError("each build requires path, version and sha256")
         binary = Path(arm["path"]).resolve(strict=True)
         if (
             arm["version"] not in {v for v, _ in meili.RELEASES.values()}
@@ -58,7 +65,10 @@ def targets(args):
             raise ValueError("target version or ELF fingerprint mismatch")
         arm["path"] = str(binary)
         notes = subprocess.check_output(["readelf", "-n", binary], text=True)
-        arm["build_id"] = re.search(r"Build ID: ([0-9a-f]{40})\b", notes)[1]
+        build_id = re.search(r"Build ID: ([0-9a-f]{40})\b", notes)
+        if build_id is None:
+            raise ValueError("expected a GNU SHA-1 build ID in the measured ELF")
+        arm["build_id"] = build_id[1]
     return specs
 
 
@@ -69,7 +79,7 @@ def pinned_inputs(args):
         left != right
         or set(left) != set(meili.INDEXES)
         or setup["documents_per_index"] != 100000
-        or any(v != left["catalog_a"] for v in left.values())
+        or any(v != CATALOG_SHA256 for v in left.values())
     ):
         raise ValueError("expected two identical seeded catalogs per release")
     state = args.fixture / "state"
@@ -111,14 +121,7 @@ def declare(args, arms, inputs):
     d.mkdir(parents=True, exist_ok=False)
     rules = d / "checks.json"
     rules.touch(mode=0o600, exist_ok=False)
-    rules.write_text(
-        json.dumps(
-            dict(
-                policy_id="federated-catalog-v1",
-                endpoints=[dict(fields={"/estimatedTotalHits": 2000})],
-            )
-        )
-    )
+    rules.write_text(json.dumps(CHECKS))
     rng = random.Random(args.seed)
     protocol = dict(
         requests=REQUESTS,
@@ -169,7 +172,8 @@ def snapshot(pid):
 def run_window(args, arm, protocol, instance, profiler=None):
     d, port, state = args.output, protocol["port"], args.fixture / "state"
     if (
-        any(value != protocol[key] for key, value in pinned_inputs(args).items())
+        read(d / "checks.json") != CHECKS
+        or any(value != protocol[key] for key, value in pinned_inputs(args).items())
         or digest(Path(arm["path"])) != arm["sha256"]
     ):
         raise ValueError("input or executable drift")
@@ -264,7 +268,7 @@ def native_report(args, mode, manifest, filename):
 
 
 def collect_profiles(args, builds, protocol):
-    from meili_samples import HZ, Sampler, compact, raw_profile
+    from meili_samples import HZ, Sampler, compact, elf_stacks, raw_profile
 
     out = args.output
     if read(out / "decision.json")["verdict"] != "regression":
@@ -293,7 +297,18 @@ def collect_profiles(args, builds, protocol):
             native, resources = run_window(args, arm, protocol, name, sampler)
             store(out / (name + "-resources.json"), resources)
             rows, maps = raw_profile(sampler.raw, sampler.interrupts)
-            frames, stacks = compact(rows, maps, Path(arm["path"]))
+            binary = Path(arm["path"])
+            portable = elf_stacks(rows, maps, binary)
+            store(
+                out / (name + "-pcs.json"),
+                dict(
+                    raw_sha256=digest(sampler.raw),
+                    binary_sha256=arm["sha256"],
+                    interrupts=sampler.interrupts,
+                    stacks=portable,
+                ),
+            )
+            frames, stacks = compact(portable, binary)
             capture = dict(
                 schema_version=2,
                 instance=name,
@@ -301,7 +316,7 @@ def collect_profiles(args, builds, protocol):
                 build_id=arm["build_id"],
                 runtime_id=protocol["runtime_id"],
                 dataset_sha256=plan["dataset_sha256"],
-                policy_id="federated-catalog-v1",
+                policy_id=CHECKS["policy_id"],
                 collector=plan["collector"],
                 frequency_hz=HZ,
                 native_result=native.name,
@@ -340,7 +355,9 @@ def main(args):
         k: {f: v for f, v in spec.items() if f != "path"} for k, spec in builds.items()
     }
     if (
-        protocol["builds"] != expected
+        protocol["runtime_id"] != RUNTIME
+        or protocol["requests"] != REQUESTS
+        or protocol["builds"] != expected
         or protocol["engine_sha256"] != digest(args.engine)
         or any(protocol[k] != v for k, v in inputs.items())
         or protocol["assigned_cpus"] != cpus()[1]
