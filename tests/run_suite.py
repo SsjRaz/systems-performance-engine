@@ -84,7 +84,7 @@ def limit(value):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--suite', choices=['integration', 'comparison', 'https', 'headers', 'mixed_workload'], required=True)
+    parser.add_argument('--suite', choices=['integration', 'comparison', 'https', 'headers', 'mixed_workload', 'methods'], required=True)
     parser.add_argument('--engine', type=Path, required=True)
     parser.add_argument('--openssl', type=Path)
     parser.add_argument('--artifacts', type=Path, required=True)

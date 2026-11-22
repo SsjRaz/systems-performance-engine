@@ -43,10 +43,11 @@ void require(bool condition, const std::string& message) {
     if (!condition) throw std::invalid_argument(message);
 }
 
-void keys(const Json& object, std::initializer_list<std::string_view> names, std::string_view location, std::string_view extra = {}, std::string_view second = {}) {
+void keys(const Json& object, std::initializer_list<std::string_view> names, std::string_view location,
+          std::initializer_list<std::string_view> versioned = {}) {
     require(object.is_object(), std::string(location) + " must be an object");
     auto expected = names.size();
-    for (const auto field : {extra, second}) {
+    for (const auto field : versioned) {
         if (field.empty()) continue;
         ++expected;
         require(object.contains(field), std::string(location) + " missing " + std::string(field));
@@ -342,15 +343,15 @@ void validate_endpoints(const Json& d, const EndpointMix& mix, double elapsed, s
 
 void validate(Run& run) {
     auto& d = run.document;
-    const auto schema = integer(d.at("schema_version"), "schema_version", 5);
+    const auto schema = integer(d.at("schema_version"), "schema_version", 6);
     require(schema >= 1, "unsupported native result schema");
     keys(d, {"schema_version", "engine", "started_at_utc", "workload", "counts", "http_status_counts",
         "transport_error_counts", "elapsed_seconds", "completed_throughput_rps", "successful_throughput_rps",
         "peak_in_flight", "interrupted", "engine_error", "success_latency_ms", "completed_latency_ms"}, "native result",
-        schema >= 4 ? "scheduling" : "", schema == 5 ? "endpoint_results" : "");
+        {schema >= 4 ? "scheduling" : "", schema >= 5 ? "endpoint_results" : ""});
     const auto& engine = d.at("engine");
     keys(engine, {"version", "source_revision", "compiler", "build_type", "build_flags", "sanitizers", "platform", "libcurl"}, "native engine metadata");
-    constexpr std::array versions = {"0.1.0", "0.2.0", "0.3.0", "0.4.0", "0.5.0"};
+    constexpr std::array versions = {"0.1.0", "0.2.0", "0.3.0", "0.4.0", "0.5.0", "0.6.0"};
     require(engine.at("version") == versions[schema - 1], "unsupported native engine/schema measurement contract");
     for (auto it = engine.begin(); it != engine.end(); ++it)
         string(it.value(), it.key(), 8192, it.key() == "source_revision" || it.key() == "build_flags");
@@ -374,7 +375,8 @@ void validate(Run& run) {
     }
     keys(w, {"url", "method", "http_version", "model", "redirects", "proxy", "connection_reuse", "warmup_requests",
         "application_retries", "success_policy", "requests", "concurrency", "timeout_ms", "max_body_bytes", "tls", "headers"}, "workload",
-        schema >= 4 ? "arrival_schedule" : "", schema == 5 ? "endpoint_mix" : "");
+        {schema >= 4 ? "arrival_schedule" : "", schema >= 5 ? "endpoint_mix" : "",
+         schema >= 6 ? "request_body_bytes" : ""});
     const auto& headers = w.at("headers");
     keys(headers, {"names", "values"}, "header metadata");
     require(headers.at("values") == "redacted", "unsupported header-value export policy");
@@ -386,13 +388,21 @@ void validate(Run& run) {
         require(is_normalized_header_name(name) && previous < name, "header names must be allowed, lowercase, unique and sorted");
         previous = name;
     }
-    require(w.at("method") == "GET" && w.at("http_version") == "1.1" &&
+    Config config;
+    config.method = string(w.at("method"), "workload.method", 6);
+    require(schema >= 6 || config.method == "GET", "legacy workloads require GET");
+    if (schema >= 6) {
+        const auto bytes = integer(w.at("request_body_bytes"), "request body length", max_request_body_bytes);
+        require(bytes == 0 || method_accepts_body(config.method), "request body is incompatible with method");
+        config.repeat_writes = true; // The saved workload supplies its request budget.
+    }
+    require(w.at("http_version") == "1.1" &&
         w.at("redirects").is_boolean() && w.at("redirects") == false && w.at("proxy").is_boolean() && w.at("proxy") == false &&
-        w.at("connection_reuse").is_boolean() && w.at("connection_reuse") == true && w.at("success_policy") == "complete_2xx",
+        w.at("connection_reuse").is_boolean() && w.at("connection_reuse") == method_reuses_connections(config.method) &&
+        w.at("success_policy") == "complete_2xx",
         "unsupported execution or success semantics");
     require(integer(w.at("warmup_requests"), "warmup_requests", max_requests) == 0 &&
         integer(w.at("application_retries"), "application_retries", max_requests) == 0, "unsupported warm-up/retry semantics");
-    Config config;
     config.url = string(w.at("url"), "workload.url", 8192);
     config.requests = integer(w.at("requests"), "workload.requests", max_requests);
     config.concurrency = static_cast<std::size_t>(integer(w.at("concurrency"), "concurrency", max_concurrency));
@@ -410,7 +420,7 @@ void validate(Run& run) {
         require(schema < 4 || (d.at("scheduling").is_null() && w.at("arrival_schedule").is_null()),
                 "closed-loop workloads cannot carry arrival data");
     }
-    if (schema == 5) {
+    if (schema >= 5) {
         if (!w.at("endpoint_mix").is_null()) config.mix = read_endpoint_mix(w.at("endpoint_mix"));
         else require(d.at("endpoint_results").is_null(), "single-target result has endpoint metrics");
     }
@@ -666,6 +676,8 @@ ComparisonReport render(Json report, ComparisonStatus status) {
             text << "Different origins explicitly allowed; network/environment equivalence remains unverified.\n";
         if (report.at("redacted_headers_acknowledged") == true)
             text << "Header values are redacted. Equality and authorization context are unverified; acknowledged explicitly.\n";
+        if (report.at("redacted_body_acknowledged") == true)
+            text << "Request body lengths match. Body content equality is unverified and explicitly acknowledged.\n";
     }
     text << "Statistical verdict: NOT ASSESSED.\n";
     return {status, text.str(), report.dump(2, ' ', true, Json::error_handler_t::replace) + '\n'};
@@ -684,6 +696,9 @@ CompareOptions parse_compare_cli(std::span<const std::string_view> arguments) {
         }
         if (arg == "--allow-redacted-headers") {
             require(!options.allow_redacted_headers, "duplicate --allow-redacted-headers"); options.allow_redacted_headers = true; continue;
+        }
+        if (arg == "--allow-redacted-body") {
+            require(!options.allow_redacted_body, "duplicate --allow-redacted-body"); options.allow_redacted_body = true; continue;
         }
         if (arg == "--baseline" || arg == "--candidate" || arg == "--json") {
             require(++i < arguments.size(), "missing value for " + std::string(arg));
@@ -712,8 +727,9 @@ std::string_view compare_usage() {
            "  --json PATH|-          New comparison JSON file, or JSON stdout with summary on stderr\n"
            "  --allow-origin-change  Acknowledge different hosts/ports; encoded path/query must still match\n"
            "  --allow-redacted-headers  Acknowledge unverifiable header values; recorded names must still match\n"
+           "  --allow-redacted-body     Acknowledge unverifiable payload contents; lengths must still match\n"
            "  --help, -h             Show comparison help\n"
-           "Native SPE 0.1.0/schema 1, 0.2.0/schema 2, 0.3.0/schema 3, 0.4.0/schema 4 and 0.5.0/schema 5 inputs; contracts cannot be mixed. No traffic or statistical verdicts.\n"
+           "Native SPE measurement contracts 0.1.0/schema 1 through 0.6.0/schema 6; contracts cannot be mixed.\n"
            "Limits: 100 files/group, 1 MiB/file, 32 MiB total, 32 JSON nesting levels.\n"
            "Exit: 0 descriptive comparison; 3 insufficient complete-success evidence; 2 rejected input; 1 output/system error.\n";
 }
@@ -723,7 +739,7 @@ int comparison_exit_code(ComparisonStatus status) {
 }
 
 ComparisonReport compare_saved_results(const CompareOptions& options) {
-    Json report{{"schema_version", 5}, {"kind", "spe_comparison"}, {"statistical_verdict", "not_assessed"},
+    Json report{{"schema_version", 6}, {"kind", "spe_comparison"}, {"statistical_verdict", "not_assessed"},
         {"status", "rejected"}, {"checks", Json::array()}, {"metrics", Json::object()}};
     std::string context = "inputs";
     try {
@@ -767,11 +783,15 @@ ComparisonReport compare_saved_results(const CompareOptions& options) {
         const bool redacted_headers = !expected.at("headers").at("names").empty();
         require(!redacted_headers || options.allow_redacted_headers,
             "header values are redacted and cannot be checked; --allow-redacted-headers explicitly acknowledges this limitation");
+        const bool redacted_body = expected.value("request_body_bytes", std::uint64_t{0}) != 0;
+        require(!redacted_body || options.allow_redacted_body,
+            "request body contents are redacted; --allow-redacted-body acknowledges that only lengths can be checked");
         report["checks"].push_back(Json{{"compatible_workload_engine_and_measurement_contract", "pass"}});
         report["engine"] = reference.document.at("engine"); report["workload"] = expected;
         report["input_result_schema_version"] = reference.document.at("schema_version");
         report["endpoint"] = reference.target.endpoint; report["origin_change_acknowledged"] = origins_differ;
         report["redacted_headers_acknowledged"] = redacted_headers;
+        report["redacted_body_acknowledged"] = redacted_body;
         report["baseline"] = group(baseline); report["candidate"] = group(candidate);
         const bool eligible = report.at("baseline").at("eligible_for_performance_deltas") == true &&
                               report.at("candidate").at("eligible_for_performance_deltas") == true;

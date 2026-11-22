@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(SystemsPerformanceEngine VERSION 0.5.0 LANGUAGES CXX)
+project(SystemsPerformanceEngine VERSION 0.6.0 LANGUAGES CXX)
 
 if(NOT UNIX)
     message(FATAL_ERROR "The initial engine supports POSIX platforms (macOS/Linux).")
@@ -82,6 +82,9 @@ if(BUILD_TESTING)
     add_test(NAME headers COMMAND "${Python3_EXECUTABLE}"
         "${PROJECT_SOURCE_DIR}/tests/run_suite.py" --suite headers --engine "$<TARGET_FILE:spe>"
         --openssl "${SPE_OPENSSL_PROGRAM}" --artifacts "${PROJECT_BINARY_DIR}/test-results/managed")
+    add_test(NAME methods COMMAND "${Python3_EXECUTABLE}"
+        "${PROJECT_SOURCE_DIR}/tests/run_suite.py" --suite methods --engine "$<TARGET_FILE:spe>"
+        --openssl "${SPE_OPENSSL_PROGRAM}" --artifacts "${PROJECT_BINARY_DIR}/test-results/managed")
     add_test(NAME retention_unit COMMAND "${Python3_EXECUTABLE}"
         "${PROJECT_SOURCE_DIR}/tests/test_run_suite.py")
     add_test(NAME restoration_unit COMMAND "${Python3_EXECUTABLE}"
@@ -94,4 +97,5 @@ if(BUILD_TESTING)
     set_tests_properties(comparison PROPERTIES TIMEOUT 120 LABELS "comparison;network;integration")
     set_tests_properties(https PROPERTIES TIMEOUT 180 LABELS "tls;network;integration")
     set_tests_properties(headers PROPERTIES TIMEOUT 180 LABELS "headers;tls;network;integration")
+    set_tests_properties(methods PROPERTIES TIMEOUT 180 LABELS "methods;tls;network;integration")
 endif()

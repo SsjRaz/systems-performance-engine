@@ -96,7 +96,7 @@ class HeadersIntegration(unittest.TestCase):
         exported = json.dumps(result)
         for private in (AUTH, API_KEY, str(command[command.index('--headers-file')+1])):
             self.assertNotIn(private, exported)
-        self.assertEqual(result['schema_version'], 5)
+        self.assertEqual(result['schema_version'], 6)
         self.assertEqual(result['workload']['headers'], dict(names=sorted(EXPECTED), values='redacted'))
         HttpIntegration.check_accounting(self, result)
         if output is None:

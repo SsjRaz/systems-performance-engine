@@ -70,6 +70,16 @@ class ResultChecks(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             self.validate(value)
 
+    def test_schema_six_requires_bodyless_get(self):
+        value = result()
+        value.update(schema_version=6, scheduling=None, endpoint_results=None)
+        value["workload"].update(model="closed_loop", arrival_schedule=None, endpoint_mix=None,
+                                 headers={"names": [], "values": "redacted"}, method="GET", request_body_bytes=0)
+        self.validate(value)
+        for field, change in (("method", "DELETE"), ("request_body_bytes", 1)):
+            with self.assertRaises(RuntimeError):
+                self.validate(dict(value, workload=dict(value["workload"], **{field: change})))
+
     def test_wrong_workload_and_invalid_observations(self):
         variants = []
         value = result(); value["workload"]["concurrency"] = 8; variants.append(value)

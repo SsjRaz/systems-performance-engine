@@ -31,6 +31,13 @@ spe::Config config() {
 }
 
 void cli_and_validation() {
+    auto write = config();
+    write.method = "POST";
+    invalid([&] { spe::validate_config(write); });  // No implicit thousand-write run via the library.
+    write.requests = 1;
+    spe::validate_config(write);
+    write.fixed_rate = spe::FixedRate{10, 500};
+    spe::validate_config(write);
     const std::vector<std::string_view> args = {"http://localhost:80/", "--requests", "37", "--concurrency", "4",
         "--timeout-ms", "250", "--json", "-", "--max-body-bytes", "2048"};
     const auto c = spe::parse_cli(args).config;
