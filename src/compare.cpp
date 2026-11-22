@@ -83,7 +83,7 @@ bool close(double a, double b) {
         std::abs(a - b) <= 1e-9 * std::max(std::abs(a), std::abs(b));
 }
 
-void timestamp(const Json& value) {
+std::int64_t timestamp(const Json& value) {
     const auto text = string(value, "started_at_utc", 20);
     require(text.size() == 20 && text[4] == '-' && text[7] == '-' && text[10] == 'T' &&
             text[13] == ':' && text[16] == ':' && text[19] == 'Z', "invalid native UTC timestamp");
@@ -97,7 +97,11 @@ void timestamp(const Json& value) {
     };
     const std::chrono::year_month_day day{std::chrono::year{part(0, 4)},
         std::chrono::month{static_cast<unsigned>(part(5, 2))}, std::chrono::day{static_cast<unsigned>(part(8, 2))}};
-    require(day.ok() && part(11, 2) < 24 && part(14, 2) < 60 && part(17, 2) <= 60, "invalid UTC timestamp value");
+    const int hour = part(11, 2), minute = part(14, 2), second = part(17, 2);
+    require(day.ok() && hour < 24 && minute < 60 && second <= 60, "invalid UTC timestamp value");
+    const auto instant = std::chrono::sys_days(day) + std::chrono::hours(hour) +
+        std::chrono::minutes(minute) + std::chrono::seconds(second);
+    return instant.time_since_epoch().count();
 }
 
 struct Target { std::string origin, endpoint; };
@@ -126,6 +130,7 @@ struct Run {
     Target target;
     bool clean = false;
     std::string state;
+    std::int64_t started_second = 0;
 };
 
 using FileIdentity = std::pair<std::uintmax_t, std::uintmax_t>;
@@ -380,7 +385,7 @@ void validate(Run& run) {
     for (auto it = engine.begin(); it != engine.end(); ++it)
         string(it.value(), it.key(), 8192, it.key() == "source_revision" || it.key() == "build_flags");
     require(engine.at("sanitizers") == "ON" || engine.at("sanitizers") == "OFF", "unknown sanitizer setting");
-    timestamp(d.at("started_at_utc"));
+    run.started_second = timestamp(d.at("started_at_utc"));
     auto& w = d.at("workload");
     auto& c = d.at("counts");
     if (schema == 1) {
@@ -568,7 +573,7 @@ Json endpoint_group(const std::vector<Run>& runs, std::size_t index, double elap
             {"median_run_p95_ms", p95.empty() ? Json(nullptr) : Json(median(p95))}};
 }
 
-Json group(const std::vector<Run>& runs) {
+Json group(const std::vector<Run>& runs, bool paired) {
     Json counts = Json::object(); for (auto name : count_names) counts[name] = std::uint64_t{0};
     Json inputs = Json::array();
     double elapsed = 0, latency_sum = 0;
@@ -590,6 +595,7 @@ Json group(const std::vector<Run>& runs) {
             {"url", d.at("workload").at("url")}, {"counts", d.at("counts")}, {"engine_error", d.at("engine_error")},
             {"transport_error_counts", d.at("transport_error_counts")},
             {"elapsed_seconds", d.at("elapsed_seconds")}, {"success_latency_ms", d.at("success_latency_ms")}});
+        if (paired) inputs.back()["started_second_utc"] = run.started_second;
         if (d.contains("verification")) inputs.back()["verification"] = d.at("verification");
         if (d.contains("endpoint_results") && !d.at("endpoint_results").is_null())
             inputs.back()["endpoint_results"] = d.at("endpoint_results");
@@ -765,7 +771,7 @@ int comparison_exit_code(ComparisonStatus status) {
     return status == ComparisonStatus::descriptive ? 0 : status == ComparisonStatus::insufficient_evidence ? 3 : 2;
 }
 
-ComparisonReport compare_saved_results(const CompareOptions& options, bool reject_copied_measurements) {
+ComparisonReport compare_saved_results(const CompareOptions& options, bool for_paired_analysis) {
     Json report{{"schema_version", 6}, {"kind", "spe_comparison"}, {"statistical_verdict", "not_assessed"},
         {"status", "rejected"}, {"checks", Json::array()}, {"metrics", Json::object()}};
     std::string context = "inputs";
@@ -795,7 +801,7 @@ ComparisonReport compare_saved_results(const CompareOptions& options, bool rejec
                 validate(run);
                 // Failed preflights have zero timing data and can genuinely be identical
                 // within one timestamp second. They already exclude the whole campaign.
-                if (reject_copied_measurements && run.clean)
+                if (for_paired_analysis && run.clean)
                     require(content_ids.insert(sha256_hex(run.document.dump())).second, "duplicate measurement contents");
                 pair.second->push_back(std::move(run));
                 report["checks"].push_back(Json{{"input", path}, {"schema_accounting_measurements", "pass"}});
@@ -829,7 +835,8 @@ ComparisonReport compare_saved_results(const CompareOptions& options, bool rejec
         report["endpoint"] = reference.target.endpoint; report["origin_change_acknowledged"] = origins_differ;
         report["redacted_headers_acknowledged"] = redacted_headers;
         report["redacted_body_acknowledged"] = redacted_body;
-        report["baseline"] = group(baseline); report["candidate"] = group(candidate);
+        report["baseline"] = group(baseline, for_paired_analysis);
+        report["candidate"] = group(candidate, for_paired_analysis);
         const bool eligible = report.at("baseline").at("eligible_for_performance_deltas") == true &&
                               report.at("candidate").at("eligible_for_performance_deltas") == true;
         for (const auto& [name, a] : report.at("baseline").at("metrics").items()) {

@@ -28,6 +28,6 @@ struct ComparisonReport {
 CompareOptions parse_compare_cli(std::span<const std::string_view> arguments);
 std::string_view compare_usage();
 // Reads bounded local files only; does not execute workloads or send HTTP traffic.
-ComparisonReport compare_saved_results(const CompareOptions& options, bool reject_copied_measurements = false);
+ComparisonReport compare_saved_results(const CompareOptions& options, bool for_paired_analysis = false);
 int comparison_exit_code(ComparisonStatus status);
 }

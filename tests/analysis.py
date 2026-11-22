@@ -140,6 +140,15 @@ class PairedAnalysis(unittest.TestCase):
         )
         self.assertIn("duplicate measurement", self.analyze(doc, 2)["input_error"])
         doc = self.design([50] * 6)
+        first_path = self.root / "run-0.json"
+        overlapping = json.loads(first_path.read_text())
+        overlapping["elapsed_seconds"] = 3.0
+        overlapping["completed_throughput_rps"] = overlapping[
+            "successful_throughput_rps"
+        ] = 1 / 3
+        first_path.write_text(json.dumps(overlapping))
+        self.assertIn("overlap", self.analyze(doc, 2)["input_error"])
+        doc = self.design([50] * 6)
         doc["blocks"].reverse()
         self.assertIn("timestamps", self.analyze(doc, 2)["input_error"])
         doc = self.design([50] * 6)

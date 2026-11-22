@@ -20,7 +20,7 @@ The small-change and unchanged campaigns all returned inconclusive. At eight pai
 
 Changing the arrival model or the offered rate rejected the comparison even when both sides delivered all requested work. In the capacity control the candidate missed 72 of 96 scheduled arrivals. In the incorrect-content control a wrong HTTP 200 stopped the candidate before all 96 timed requests. Four pairs produced a descriptive median and no finite 95% interval.
 
-The original analyzer identified repeated empty timing records as copies when several failed probes shared a timestamp second. It withheld a verdict but obscured the reason. Commit `681ebec` reports the failed correctness probes and applies the copied-content check to successful measurements. Reanalysis preserved all 48 original fixture and application verdicts, intervals and effects. A fresh five-campaign diagnostic suite verified the corrected failure reason together with the two compatibility checks, capacity misses and insufficient replication.
+The original analyzer identified repeated empty timing records as copies when several failed probes shared a timestamp second. It withheld a verdict but obscured the reason. Commit `681ebec` reports the failed correctness probes and applies the copied-content check to successful measurements. Reanalysis preserved all 48 original fixture and application verdicts, intervals and effects. A fresh five-campaign diagnostic suite verified the corrected failure reason together with the two compatibility checks, capacity misses and insufficient replication. A final review added rejection of chronologically impossible overlapping measurement windows. The collected runs passed this check.
 
 ## Meilisearch and Gitea
 

@@ -7,6 +7,7 @@
 #include <cmath>
 #include <filesystem>
 #include <numeric>
+#include <optional>
 #include <limits>
 #include <set>
 #include <sstream>
@@ -188,17 +189,26 @@ ComparisonReport analyze_experiment(const AnalyzeOptions& options) {
         const auto metric = manifest.at("metric").get<std::string>();
         const auto& left = evidence.at("baseline").at("inputs");
         const auto& right = evidence.at("candidate").at("inputs");
-        std::string previous;
+        std::optional<std::int64_t> previous_start;
+        double previous_duration = 0;
         std::vector<double> changes;
         for (std::size_t i = 0; i < left.size(); ++i) {
             const auto& a = left.at(i);
             const auto& b = right.at(i);
             require(a.at("verification").at("status") == "passed" && b.at("verification").at("status") == "passed",
                     "missing successful preflight");
-            const auto& first = (design.baseline_first[i] ? a : b).at("started_at_utc").get_ref<const std::string&>();
-            const auto& last = (design.baseline_first[i] ? b : a).at("started_at_utc").get_ref<const std::string&>();
-            require(previous <= first && first <= last, "run timestamps contradict manifest order");
-            previous = last;
+            for (auto input : {design.baseline_first[i] ? &a : &b, design.baseline_first[i] ? &b : &a}) {
+                const auto start = input->at("started_second_utc").get<std::int64_t>();
+                if (previous_start) {
+                    require(start >= *previous_start, "run timestamps contradict manifest order");
+                    // Start times are truncated to seconds. Only reject an overlap
+                    // that is certain even at opposite ends of those seconds.
+                    require(previous_duration <= static_cast<double>(start - *previous_start + 1) + 1e-9,
+                            "measurement windows overlap beyond timestamp precision");
+                }
+                previous_start = start;
+                previous_duration = input->at("elapsed_seconds").get<double>();
+            }
             const double baseline = observation(a, metric), candidate = observation(b, metric);
             if (baseline <= 0 || !std::isfinite(baseline) || !std::isfinite(candidate))
                 return finish(std::move(report), ComparisonStatus::insufficient_evidence, "unusable_primary_metric");
