@@ -63,6 +63,7 @@ In controlled Spring Petclinic experiments, SPE and k6 both observed a slowdown 
 
 - Build options, authentication, CLI flags, and result fields — [Usage reference](docs/USAGE.md)
 - Petclinic setup, k6 comparisons, and recorded findings — [Measurement validation](docs/VALIDATION.md)
+- Federated search and Git repository reads on pinned application releases — [Meilisearch and Gitea benchmarks](benchmarks/oss/README.md)
 - The event loop, connection handling, and measurement boundaries — [Architecture](docs/ARCHITECTURE.md)
 - Work in progress and planned milestones — [Roadmap](docs/ROADMAP.md)
 
