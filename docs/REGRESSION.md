@@ -52,4 +52,6 @@ python3 benchmarks/oss/detector_validation.py apps --engine build/release/spe --
   --tools build/oss/tools --meili build/oss/meili-1 --gitea build/oss/gitea-1
 ```
 
+The measured campaigns and limitations are recorded in the [detector results](../benchmarks/oss/DETECTOR-RESULTS.md). To repeat only the five eligibility diagnostics, select `diagnostics` in place of `fixture`. `verify_detector.py` independently recomputes the campaign intervals from the saved runs.
+
 For the application command, use prepared Meilisearch and seeded Gitea directories from the [application instructions](../benchmarks/oss/README.md). Run builds and other experiments outside measurement windows. Use a second independently provisioned host and further held-out campaigns before choosing a CI gating policy.

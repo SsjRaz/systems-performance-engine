@@ -118,6 +118,11 @@ def verify(root, engine=None):
                 )
         check(len(instances) == len(receipt_rows), "unmatched receipt records")
         if report["effect_percent"] is None:
+            if len(changes) == len(manifest["blocks"]):
+                check(
+                    results[name]["case"] in ("different-model", "different-rate"),
+                    "eligible campaign lost its effect",
+                )
             check(
                 report["verdict"] == "inconclusive"
                 and report["interval_percent"] is None,
