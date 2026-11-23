@@ -17,7 +17,7 @@ For the reduced configuration add `--no-default-features` to that command. For a
 
 ### Dictionary cache for the normal build
 
-If the pinned Lindera asset host is unavailable, obtain the same dictionary versions from the Lindera organization's GitHub repositories. The v0.43.3 release CLI was built with the compression feature that Charabia enables. The helper verifies each dictionary input against its tagged Git blob or Git LFS SHA-256 and size before running the release builder. The resulting seven dictionary components per language are available through the crate's supported cache. Keep that cache fixed for all three builds. The upstream build script performs its normal mini-dashboard checksum check. [Lindera release workflow](https://github.com/lindera/lindera/blob/v0.43.3/.github/workflows/release.yml) · [Lindera cache handling](https://github.com/lindera/lindera/blob/v0.43.3/lindera-dictionary/src/assets.rs)
+If the pinned Lindera asset host is unavailable, obtain the same dictionary versions from the Lindera organization's GitHub repositories. The v0.43.3 release CLI was built with the compression feature that Charabia enables. The helper verifies each dictionary input against its tagged Git blob or Git LFS SHA-256 and size before running the release builder. The resulting seven dictionary components per language are available through the crate's supported cache. Keep that cache fixed for all three builds. The dashboard archive must match the hard-coded upstream SHA-1 and the release SHA-256. [Lindera release workflow](https://github.com/lindera/lindera/blob/v0.43.3/.github/workflows/release.yml) · [Lindera cache handling](https://github.com/lindera/lindera/blob/v0.43.3/lindera-dictionary/src/assets.rs)
 
 ```bash
 assets="$PWD/build/readiness-assets"
@@ -35,6 +35,14 @@ curl -fL https://github.com/lindera/lindera/releases/download/v0.43.3/lindera-x8
 export LINDERA_CACHE="$PWD/build/readiness-dictionaries"
 python3 benchmarks/oss/meili-readiness/dictionary_cache.py --assets "$assets" \
     --cache "$LINDERA_CACHE" --report "$assets/provenance.json"
+```
+
+If the build script reports `UnknownIssuer` for the dashboard, download the official v0.4.1 archive with the system TLS trust store. Give the helper the failed Meilisearch build's `OUT_DIR`, the release build's host `libstatic_files-*.rlib` and its `rustc`. It runs the same static resource generator as upstream and writes the cache marker after success. Rerun the original locked build. The HTTP checks verify the embedded HTML and JavaScript against the release bytes. [Dashboard release](https://github.com/meilisearch/mini-dashboard/releases/tag/v0.4.1) · [Upstream build script](https://github.com/meilisearch/meilisearch/blob/02ff9a4a1cae79ce405638b6323fbd2f939f7f67/crates/meilisearch/build.rs)
+
+```bash
+curl -fL https://github.com/meilisearch/mini-dashboard/releases/download/v0.4.1/build.zip -o "$assets/dashboard.zip"
+python3 benchmarks/oss/meili-readiness/dashboard_cache.py --archive "$assets/dashboard.zip" \
+    --out-dir "$dashboard_out" --static-files-rlib "$static_files" --rustc "$rustc"
 ```
 
 ### Parser allocation diagnostic

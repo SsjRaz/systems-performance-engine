@@ -32,13 +32,17 @@ def digest(path):
 
 def prepare(args):
     cache = args.cache.resolve() / "0.43.3"
-    cache.mkdir(parents=True, exist_ok=False)
+    cache.parent.mkdir(parents=True, exist_ok=True)
+    if cache.exists():
+        raise ValueError("select a fresh dictionary cache")
     archive = args.assets / "lindera-cli.zip"
     if digest(archive) != CLI_ZIP:
         raise ValueError("unexpected released Linux v0.43.3 Lindera CLI")
     report = {}
-    with tempfile.TemporaryDirectory(dir=cache) as tmp:
+    with tempfile.TemporaryDirectory(dir=cache.parent) as tmp:
         scratch = Path(tmp)
+        ready = scratch / "complete"
+        ready.mkdir()
         cli = scratch / "lindera"
         with zipfile.ZipFile(archive) as z:
             cli.write_bytes(z.read("lindera"))
@@ -102,7 +106,8 @@ def prepare(args):
                 inputs=inputs,
                 output={p.name: digest(p) for p in output.iterdir() if p.is_file()},
             )
-            output.rename(cache / output.name)
+            output.rename(ready / output.name)
+        ready.rename(cache)
     args.report.write_text(
         json.dumps(dict(cli_zip_sha256=CLI_ZIP, dictionaries=report), indent=2) + "\n"
     )

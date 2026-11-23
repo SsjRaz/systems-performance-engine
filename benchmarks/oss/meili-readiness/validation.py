@@ -171,6 +171,19 @@ def semantic_suite(port, corpus, default_features):
             checks["segmented-" + lang] = dict(
                 status=status, total=len(expected), reply=signature(stable(data))
             )
+        assets = {
+            "/": "ce767dc51429d792bd63c74cacaa7ea6fd1428f14f6cec3f75d2f8d71b8ccb6a",
+            "/assets/index-dDwzADMz.js": "fe3827b8cfda48dfe6741221b5e0796727721caa4832afc2a2b7f5d6fcf03152",
+        }
+        for path, expected in assets.items():
+            with closing(
+                http.client.HTTPConnection("127.0.0.1", port, timeout=12)
+            ) as conn:
+                conn.request("GET", path)
+                response = conn.getresponse()
+                actual = hashlib.sha256(response.read(1_048_576)).hexdigest()
+                assert response.status == 200 and actual == expected
+                checks["dashboard" + path] = dict(status=response.status, reply=actual)
     return checks
 
 
