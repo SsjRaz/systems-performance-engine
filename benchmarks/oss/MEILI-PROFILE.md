@@ -55,6 +55,8 @@ All 36,864 timed requests succeeded across 96 fresh measured processes. Each nat
 
 The results cover one VM, two local indexes and one filter workload. The source intervention changes an owned representation in the parser. Other query shapes, default-feature builds of the patch and independent hosts still need validation before an upstream production recommendation.
 
+The follow-up study repeats the ownership intervention on an Intel host with normal and reduced feature builds, checks additional workloads, and traces the upstream fix to its release. [Upstream-readiness study](meili-readiness/README.md)
+
 ## Reproduce the measurements
 
 Use Linux x86-64 with three assignable CPUs, GNU binutils, gperftools libprofiler and the existing dataset preparation tools. Build SPE in Release mode and prepare the fixture as described in the OSS benchmark guide. Select the same SPE executable for every timing and diagnostic run within a comparison. Each timing command creates a new output directory. [OSS setup](README.md)
