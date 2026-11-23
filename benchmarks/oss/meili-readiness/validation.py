@@ -252,7 +252,12 @@ def identity(app, arm, port):
     assert sorted(os.sched_getaffinity(app.proc.pid)) == cpus()[1]
 
 
-def catalog_cases():
+def catalog_cases(phase="catalog"):
+    if phase == "short-lists":
+        return {
+            name: ("/multi-search", json.loads(meili.body(size)))
+            for name, size in (("empty-federated", 0), ("singleton-federated", 1))
+        }
     one = json.loads(meili.body(1000))["queries"][0]["filter"]
     single = "/indexes/catalog_a/search"
     return {
@@ -264,8 +269,9 @@ def catalog_cases():
 
 
 def check_catalog(name, data):
-    if name == "short-federated":
-        meili.validate_hits(data, 3)
+    sizes = {"empty-federated": 0, "singleton-federated": 1, "short-federated": 3}
+    if name in sizes:
+        meili.validate_hits(data, sizes[name])
     else:
         hits = data["hits"]
         assert hits and all(h == meili.document(int(h["articleNumber"])) for h in hits)
@@ -399,7 +405,7 @@ def main(args):
         for run in pair["runs"]:
             del run["result"]
     corpus = {i: documents(i) for i in INDEXES}
-    catalog = list(catalog_cases().items())
+    catalog = list(catalog_cases(args.phase).items())
     # Within each pair both arms have the same case order.
     orders = []
     for _ in pairs:
@@ -428,7 +434,7 @@ def main(args):
             name, arm = run["instance"], arms[run["arm"]]
             if args.phase == "index":
                 row = index_window(args, arm, name, port, corpus, i == 0)
-            elif args.phase == "catalog":
+            elif args.phase in ("catalog", "short-lists"):
                 row = catalog_window(args, arm, name, port, orders[i])
             else:
                 row = stage_window(args, arm, name, port)
@@ -437,7 +443,7 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("phase", choices=("index", "catalog", "stages"))
+    parser.add_argument("phase", choices=("index", "catalog", "stages", "short-lists"))
     for key in ("output", "arms", "fixture", "engine"):
         parser.add_argument("--" + key, required=True, type=Path)
     parser.add_argument(

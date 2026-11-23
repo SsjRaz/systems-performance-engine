@@ -71,8 +71,12 @@ def campaign(args):
                     directory / "ranking.json",
                 )
     else:
-        for j, phase in enumerate(("index", "catalog", "stages")):
+        for j, phase in enumerate(("index", "catalog", "stages", "short-lists")):
             for i, (name, arms) in enumerate(specs):
+                if phase == "short-lists" and (
+                    config != "default" or name == "residual"
+                ):
+                    continue
                 if phase == "stages" and name != "residual":
                     continue
                 key = f"{config}-{phase}-{name}"

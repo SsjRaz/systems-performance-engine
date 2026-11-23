@@ -62,7 +62,7 @@ for config in portable default; do
 done
 ```
 
-For each configuration this runs 32 primary timing pairs, four diagnostic sampling pairs if SPE confirms a residual regression, 24 indexing pairs and 24 secondary search pairs. Each secondary search server measures four workloads in a within-pair matched order. A separate four-pair diagnostic collects eight stage reports after one warm-up per server. Each 512-document indexing batch must complete successfully and each full retrieved corpus must match the generator. Successful response digests cover the ordered payload and metadata after removing request UUID and processing time. Error comparisons include the full message, status, type, code and link.
+For each configuration this runs 32 primary timing pairs, four diagnostic sampling pairs if SPE confirms a residual regression, 24 indexing pairs and 24 secondary search pairs. Each secondary search server measures four workloads in a within-pair matched order. The default configuration also runs two short-list comparisons of eight pairs each. A separate four-pair diagnostic collects eight stage reports after one warm-up per server. Each 512-document indexing batch must complete successfully and each full retrieved corpus must match the generator. Successful response digests cover the ordered payload and metadata after removing request UUID and processing time. Error comparisons include the full message, status, type, code and link.
 
 ## Replay
 

@@ -195,8 +195,8 @@ def secondary(root, expected, seen, same_release):
                 }
                 if "semantics" in row:
                     semantics[arm] = row["semantics"]
-            elif phase == "catalog":
-                if row.keys() != catalog_cases().keys():
+            elif phase in ("catalog", "short-lists"):
+                if row.keys() != catalog_cases(phase).keys():
                     raise ValueError("incomplete workload set")
                 group[arm] = {}
                 for case, item in row.items():
@@ -259,7 +259,7 @@ def secondary(root, expected, seen, same_release):
             semantics.keys() == set(ARMS)
             and semantics["baseline"].keys() == semantics["candidate"].keys()
         )
-        if phase == "catalog":
+        if phase in ("catalog", "short-lists"):
             assert all(
                 len(v) == 1 for by_arm in semantics.values() for v in by_arm.values()
             )
@@ -303,8 +303,12 @@ def audit(root, engine, configs, binaries):
         aa, patch, residual = (plans[n]["builds"] for n in ("aa", "patch", "residual"))
         assert aa["baseline"] == aa["candidate"] == patch["baseline"]
         assert patch["candidate"] == residual["candidate"]
-        for phase in ("index", "catalog", "stages"):
+        for phase in ("index", "catalog", "stages", "short-lists"):
             for name in ("aa", "patch", "residual"):
+                if phase == "short-lists" and (
+                    config != "default" or name == "residual"
+                ):
+                    continue
                 if phase == "stages" and name != "residual":
                     continue
                 key = phase + "-" + name
