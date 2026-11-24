@@ -2,6 +2,16 @@
 
 Systems Performance Engine (SPE) is a C++20 command-line tool for running concurrent HTTP and HTTPS workloads and comparing backend service performance.
 
+## Why one Meilisearch query took twice as long after an upgrade
+
+On an AMD EPYC host, a federated search took **3.26 ms on Meilisearch v1.41.0** and **7.37 ms on v1.42.0**. SPE replayed `POST /multi-search` with the filter `articleNumber IN ['1', '2', …, '1000']` across two catalogs of 100,000 products each. Both releases returned the same 20 hits in the same order. [Query body](https://github.com/SsjRaz/systems-performance-engine/blob/d51983436d0dc6865a1e6b00eaea75e77f9a5dfd/benchmarks/oss/meilisearch_bench.py#L47-L54)
+
+![Median of run means on AMD EPYC. Published releases took 3.26 ms on v1.41.0 and 7.37 ms on v1.42.0. In a separate v1.42.0 source-build comparison, stock took 6.58 ms and the shared-filter-text build took 3.90 ms.](docs/images/meilisearch-query-latency.png)
+
+CPU profiles pointed to the v1.42.0 filter parser, which copied the full filter text for individual list values. We changed those values to share one copy. Across paired runs, mean latency fell by a median of **42.1% on AMD** with reduced features and **28.5% on Intel** with default features. The patched build still trailed v1.41.0. [Release timings and patch](https://github.com/SsjRaz/systems-performance-engine/blob/1bedb7ebd173666aeb87a2b24e799d9817e16fcc/benchmarks/oss/MEILI-PROFILE.md#published-releases) · [Two-host study](https://github.com/SsjRaz/systems-performance-engine/blob/36486826e515c4ee86cc1e1ed99b42873e46e224/benchmarks/oss/meili-readiness/README.md#primary-timing)
+
+Meilisearch independently shipped a broader fix for long filters in v1.56.1, written by `@dureuill`. [Upstream fix](https://github.com/meilisearch/meilisearch/pull/6695) · [Release notes](https://github.com/meilisearch/meilisearch/releases/tag/v1.56.1)
+
 ## Aim
 
 Help backend developers understand how code changes affect service performance before those changes reach production. For example, after changing a database query, run the same endpoint workload against both versions and compare throughput, tail latency, and failures. Repeating the workload against unchanged code gives those differences context.
