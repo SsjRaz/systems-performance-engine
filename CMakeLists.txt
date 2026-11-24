@@ -59,6 +59,11 @@ target_include_directories(spe_comparison SYSTEM PRIVATE third_party/nlohmann/in
 target_link_libraries(spe_comparison PUBLIC spe_core)
 add_executable(spe src/main.cpp)
 target_link_libraries(spe PRIVATE spe_comparison)
+# Keep the local study driver with its native engine when the executable moves.
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS scripts/study.py)
+file(READ "${PROJECT_SOURCE_DIR}/scripts/study.py" SPE_STUDY_SCRIPT)
+configure_file(src/study_script.hpp.in generated/spe/study_script.hpp @ONLY)
+target_include_directories(spe PRIVATE "${PROJECT_BINARY_DIR}/generated")
 
 include(CTest)
 if(BUILD_TESTING)
@@ -67,6 +72,9 @@ if(BUILD_TESTING)
     add_test(NAME unit COMMAND spe_unit_tests)
     find_package(Python3 3.10 REQUIRED COMPONENTS Interpreter)
     find_program(SPE_OPENSSL_PROGRAM openssl REQUIRED)
+    add_test(NAME git_revision_study COMMAND "${Python3_EXECUTABLE}"
+        "${PROJECT_SOURCE_DIR}/tests/study.py" --engine "$<TARGET_FILE:spe>")
+    set_tests_properties(git_revision_study PROPERTIES TIMEOUT 180 LABELS "comparison;network;integration")
     add_test(NAME integration COMMAND "${Python3_EXECUTABLE}"
         "${PROJECT_SOURCE_DIR}/tests/run_suite.py" --suite integration --engine "$<TARGET_FILE:spe>"
         --artifacts "${PROJECT_BINARY_DIR}/test-results/managed")

@@ -20,7 +20,7 @@ Commands below run from the repository root. Platform coverage is listed in the 
 
 ## Build and test
 
-Requirements: a C++20 compiler, CMake 3.24+, a build tool such as Make, and libcurl 7.85+ development headers/library with asynchronous DNS support. HTTPS requires a TLS-enabled libcurl. CA-bundle SHA-256 uses CommonCrypto on macOS and OpenSSL Crypto 1.1.1+ development headers/library on Linux. Python 3.10+ and the OpenSSL command-line tool are test dependencies; neither is an engine runtime dependency. Ubuntu packages include `libcurl4-openssl-dev`, `libssl-dev`, and `openssl`. Functional builds have been exercised on macOS arm64 (Apple Clang 16 / libcurl 8.7.1) and Ubuntu 24.04 arm64 in Docker (GCC 13.3 / libcurl 8.5.0).
+Requirements: a C++20 compiler, CMake 3.24+, a build tool such as Make, and libcurl 7.85+ development headers/library with asynchronous DNS support. HTTPS requires a TLS-enabled libcurl. CA-bundle SHA-256 uses CommonCrypto on macOS and OpenSSL Crypto 1.1.1+ development headers/library on Linux. Tests use Python 3.10+ and the OpenSSL command-line tool. The Git revision study command uses Python 3.10+ and Git at runtime. Ubuntu packages include `libcurl4-openssl-dev`, `libssl-dev`, and `openssl`. Functional builds have been exercised on macOS arm64 (Apple Clang 16 / libcurl 8.7.1) and Ubuntu 24.04 arm64 in Docker (GCC 13.3 / libcurl 8.5.0). [Git revision study](STUDY.md)
 
 An optional local CMake installation uses ignored build output:
 

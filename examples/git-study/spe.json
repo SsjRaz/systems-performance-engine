@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "workload_id": "catalog-lookup-v1",
+  "build": [["python3", "-m", "zipapp", "service", "-o", "catalog.pyz"]],
+  "start": ["python3", "catalog.pyz", "{port}"],
+  "readiness": {"path": "/ready", "timeout_ms": 5000},
+  "endpoint": "/lookup",
+  "expected_response": {"fields": {"/answer": 42}},
+  "measurement": {
+    "pairs": 8,
+    "requests": 24,
+    "concurrency": 1,
+    "metric": "mean_latency_ms",
+    "meaningful_change_percent": 10
+  }
+}

@@ -10,6 +10,7 @@ Help backend developers understand how code changes affect service performance b
 
 **Early development.** The native runner supports untimed response verification, descriptive saved-result comparison and advisory paired regression analysis. Trace replay remains planned.
 
+- Compare two local Git commits with `spe study --baseline main --candidate HEAD --config spe.json`. SPE builds the revisions, starts fresh servers and reports the paired change. [Try a working example](docs/STUDY.md#try-a-controlled-regression)
 - Run GET and HEAD with connection reuse. POST, PUT, PATCH, and DELETE use a fresh connection for each write and default to one request. POST, PUT, and PATCH accept a private binary payload up to 64 KiB. [HTTP methods and bodies](docs/USAGE.md#http-methods-and-request-bodies)
 - Set a target arrival rate and duration with `--rate` and `--duration-ms`. The runner measures dispatch delay and counts arrivals missed under overload. [Fixed-rate scheduling](docs/USAGE.md#fixed-rate-scheduling)
 - Run two weighted GET paths on one origin and see throughput, latency and missed arrivals for each path. [Endpoint mixes](docs/USAGE.md#two-endpoint-workloads)
