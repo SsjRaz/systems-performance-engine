@@ -4,6 +4,7 @@
 #include "spe/profile.hpp"
 #include "spe/engine.hpp"
 #include "spe/result.hpp"
+#include "spe/study_script.hpp"
 
 #include <csignal>
 #include <cerrno>
@@ -19,6 +20,15 @@
 namespace {
 volatile std::sig_atomic_t received_signal = 0;
 extern "C" void on_signal(int signal) { received_signal = signal; }
+
+[[noreturn]] void start_study(int argc, char** argv) {
+    std::vector<const char*> command{"python3", "-I", "-c", spe::study_script, argv[0]};
+    command.insert(command.end(), argv + 2, argv + argc);
+    command.push_back(nullptr);
+    // POSIX exec leaves the argument strings untouched.
+    ::execvp(command.front(), const_cast<char* const*>(command.data()));
+    throw std::system_error(errno, std::generic_category(), "spe study requires python3 on PATH");
+}
 
 class ResultFile {
 public:
@@ -78,6 +88,7 @@ int main(int argc, char** argv) {
         if (!arguments.empty()) {
             const auto command = arguments.front();
             const auto args = std::span<const std::string_view>(arguments).subspan(1);
+            if (command == "study") start_study(argc, argv);
             if (command == "compare") {
                 return report_command(spe::parse_compare_cli(args), spe::compare_usage(),
                     [](const auto& options) { return spe::compare_saved_results(options); });

@@ -1,0 +1,5 @@
+#pragma once
+
+namespace spe {
+inline constexpr char study_script[] = R"spe_py(@SPE_STUDY_SCRIPT@)spe_py";
+}
