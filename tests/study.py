@@ -174,6 +174,17 @@ class RevisionStudy(unittest.TestCase):
         self.assertEqual(len(self.records()), 1)
         self.assertFalse(list(self.out.glob("pair-*.json")))
 
+    def test_slow_healthy_readiness(self):
+        self.config.update(
+            build=[],
+            start=[sys.executable, str(Path(__file__).with_name("http_server.py")), "--port", "{port}"],
+            readiness=dict(path="/ok?delay_ms=500", timeout_ms=3000),
+            endpoint="/ok",
+            expected_response={"sha256": "0" * 64},
+        )
+        # The slow health check should succeed and reach the intentionally failing content check.
+        self.assertIn("content_mismatch", self.invoke(3).stderr)
+
     def test_occupied_port(self):
         with socket.socket() as occupied:
             occupied.bind(("127.0.0.1", 0))

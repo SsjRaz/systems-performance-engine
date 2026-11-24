@@ -307,7 +307,7 @@ def wait_ready(engine, server, origin, ready, work):
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise StudyError("readiness timed out")
-        timeout_ms = max(1, min(300, int(1000 * remaining)))
+        timeout_ms = max(1, int(1000 * remaining))
         code = run(
             [
                 engine,
