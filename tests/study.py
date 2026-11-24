@@ -60,7 +60,9 @@ class RevisionStudy(unittest.TestCase):
         self.env = dict(os.environ, TMPDIR=str(self.scratch))
 
     def git(self, *args):
-        return subprocess.check_output(["git", *args], cwd=self.repo, text=True).strip()
+        return subprocess.check_output(
+            ["git", "-c", "maintenance.auto=false", *args], cwd=self.repo, text=True
+        ).strip()
 
     def state_commands(self):
         return [
@@ -208,6 +210,18 @@ class RevisionStudy(unittest.TestCase):
         self.invoke(2)
         self.assertFalse(self.out.exists())
 
+    def test_config_must_be_a_regular_file(self):
+        args = self.command()
+        fifo = self.root / "config-pipe"
+        os.mkfifo(fifo)
+        args[args.index("--config") + 1] = fifo
+        result = subprocess.run(
+            args, cwd=self.repo, env=self.env, capture_output=True, text=True, timeout=5
+        )
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn("regular JSON file", result.stderr)
+        self.assertFalse(self.out.exists())
+
     def interrupt_at(self, marker, signum):
         child = subprocess.Popen(
             self.command(),
@@ -248,19 +262,22 @@ class RevisionStudy(unittest.TestCase):
 
     def test_sigterm_during_build_cleans_descendants(self):
         # The builder exits on TERM. Its worker ignores TERM and owns a socket.
-        # Its port must become available before the command returns.
-        marker = self.root / "worker-port"
+        marker = self.root / "worker"
         worker = (
-            "import signal,socket,sys,time\nfrom pathlib import Path\n"
+            "import json,os,signal,socket,sys,time\nfrom pathlib import Path\n"
             "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
             "s=socket.socket(); s.bind(('127.0.0.1',0)); s.listen()\n"
-            "Path(sys.argv[1]).write_text(str(s.getsockname()[1])); time.sleep(30)"
+            "Path(sys.argv[1]).write_text(json.dumps([os.getpid(),s.getsockname()[1]])); time.sleep(30)"
         )
         builder = "import subprocess,sys,time; subprocess.Popen([sys.executable,'-c',*sys.argv[1:]]); time.sleep(30)"
         self.config["build"] = [[sys.executable, "-c", builder, worker, str(marker)]]
         self.interrupt_at(lambda: marker.exists() and bool(marker.read_text()), signal.SIGTERM)
+        pid, port = json.loads(marker.read_text())
         with socket.socket() as probe:
-            probe.bind(("127.0.0.1", int(marker.read_text())))
+            probe.bind(("127.0.0.1", port))
+        if sys.platform.startswith("linux"):
+            with self.assertRaises(ProcessLookupError):
+                os.kill(pid, 0)
 
 
 if __name__ == "__main__":

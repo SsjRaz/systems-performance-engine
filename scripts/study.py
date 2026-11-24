@@ -11,6 +11,7 @@ import secrets
 import shutil
 import signal
 import socket
+import stat
 import subprocess
 import sys
 import tempfile
@@ -61,7 +62,10 @@ def route(path):
 
 
 def load_config(path):
-    with path.open("rb") as stream:
+    with os.fdopen(os.open(path, os.O_RDONLY | os.O_NONBLOCK), "rb") as stream:
+        require(
+            stat.S_ISREG(os.fstat(stream.fileno()).st_mode), "configuration must be a regular JSON file"
+        )
         raw = stream.read(65537)
     require(len(raw) <= 65536, "configuration exceeds 64 KiB")
     try:
@@ -184,6 +188,13 @@ def process(argv, cwd, *, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT, e
         except ProcessLookupError:
             pass
         child.wait()
+        # On Linux the launcher is a subreaper. A build can leave workers to
+        # us when its leader exits. Only wait for members of this owned group.
+        while True:
+            try:
+                os.waitpid(-child.pid, 0)
+            except ChildProcessError:
+                break
 
 
 def alive(server):
@@ -226,7 +237,7 @@ def git(cwd, *args):
     )
     with tempfile.TemporaryFile() as output:
         code = run(
-            ["git", "-c", "core.hooksPath=" + os.devnull, *args],
+            ["git", "-c", "core.hooksPath=" + os.devnull, "-c", "maintenance.auto=false", *args],
             cwd,
             600,
             env=env,

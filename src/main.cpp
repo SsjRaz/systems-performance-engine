@@ -14,6 +14,9 @@
 #include <stdexcept>
 #include <string_view>
 #include <system_error>
+#ifdef __linux__
+#include <sys/prctl.h>
+#endif
 #include <unistd.h>
 #include <vector>
 
@@ -22,6 +25,12 @@ volatile std::sig_atomic_t received_signal = 0;
 extern "C" void on_signal(int signal) { received_signal = signal; }
 
 [[noreturn]] void start_study(int argc, char** argv) {
+#ifdef __linux__
+    // Adopt orphaned build/server workers so the driver can reap its own groups
+    // even when the container's PID 1 does not run a child reaper.
+    if (::prctl(PR_SET_CHILD_SUBREAPER, 1L, 0L, 0L, 0L) != 0)
+        throw std::system_error(errno, std::generic_category(), "cannot supervise study descendants");
+#endif
     std::vector<const char*> command{"python3", "-I", "-c", spe::study_script, argv[0]};
     command.insert(command.end(), argv + 2, argv + argc);
     command.push_back(nullptr);
